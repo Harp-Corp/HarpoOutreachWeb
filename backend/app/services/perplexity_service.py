@@ -1019,14 +1019,18 @@ comply.reg: RegTech SaaS for automated compliance monitoring, regulatory change 
 
 MANDATORY RULES:
 1. LANGUAGE: Write ENTIRELY in English.
-2. FACTS: Every post MUST have 1-2 concrete numbers/statistics with source citation (e.g. Source: EBA, BaFin).
-3. NO HALLUCINATIONS: Only verifiable facts.
-4. COMPLY.REG RELEVANCE: Address problems comply.reg solves.
-5. NO DUPLICATE topic/hook.
-6. FOOTER: Added automatically — do NOT include any footer.
-7. VALUE: Genuine insight for compliance professionals.
-8. TIMELINESS: Reference recent regulatory developments.
-Return JSON: {{"content": "...", "hashtags": [...]}}"""
+2. GEOGRAPHIC FOCUS: ALL content MUST focus on EUROPE (EU, EEA, UK, Switzerland). Do NOT reference US, SEC, or non-European regulators unless comparing to EU rules.
+3. CURRENCY: ALL monetary values MUST be in EUR (€). Convert any USD or GBP figures to EUR.
+4. FACTS: Every post MUST have 1-2 concrete numbers/statistics with explicit source citation in the text (e.g. "According to EBA's 2025 Annual Report", "Source: European Commission, March 2026"). Raw numbers without sources are NOT acceptable.
+5. SOURCES: Include the source name AND publication date for every statistic or claim. Use Perplexity citations where available.
+6. NO HALLUCINATIONS: Only verifiable facts from real European regulatory bodies, institutions, or reputable publications.
+7. COMPLY.REG RELEVANCE: Address problems comply.reg solves.
+8. NO DUPLICATE topic/hook.
+9. FOOTER: Added automatically — do NOT include any footer.
+10. VALUE: Genuine insight for European compliance professionals.
+11. TIMELINESS: Reference recent EU regulatory developments, ECB/EBA/ESMA/BaFin publications.
+12. EUROPEAN REGULATIONS ONLY: Focus on DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, PSD2/PSD3, AML6/AMLD, EBA Guidelines, Lieferkettengesetz/CSDDD.
+Return JSON: {{"content": "...", "hashtags": [...], "sources": ["Source Name (URL)"]}}"""
 
     industry_context = ", ".join(industries) if industries else "Financial Services, RegTech, Compliance"
 
@@ -1035,22 +1039,25 @@ Topic: {topic} - {topic_prefix} {industry_context}
 
 REQUIREMENTS:
 - Write in English
+- ALL content focused on EUROPE (EU, EEA, UK, Switzerland) — no US/SEC references
+- ALL monetary amounts in EUR (€)
 - Hook in line 1 (number or provocative thesis)
-- At least 1 concrete number/statistic with source
-- Reference DORA, NIS2, GDPR, MiCA, EU AI Act, CSRD or current EU regulations
+- At least 1-2 concrete numbers/statistics, each with EXPLICIT SOURCE ATTRIBUTION in the text (e.g. "According to [Source], ...")
+- Reference DORA, NIS2, GDPR, MiCA, EU AI Act, CSRD, PSD3, AMLD, EBA Guidelines or current EU regulations
+- Include the specific source name and date for each claim
 - Question or CTA at end
 - Mention comply.reg naturally
 - LinkedIn: 150-250 words, line breaks{dupe_context}
-Hashtags: 5-7 from: #DORA #NIS2 #GDPR #RegTech #Compliance #FinTech #RegulatoryCompliance #comply #RiskManagement #AML #BaFin #EBA
-Return ONLY valid JSON."""
+Hashtags: 5-7 from: #DORA #NIS2 #GDPR #RegTech #Compliance #FinTech #RegulatoryCompliance #comply #RiskManagement #AML #BaFin #EBA #ESMA #ECB #CSRD #EUAIAct
+Return ONLY valid JSON with content, hashtags, AND sources array."""
 
     content = await _call_api(
         system, user, api_key,
-        max_tokens=2000,
-        model=MODEL_FAST,
+        max_tokens=3000,
+        model=MODEL_REASONING,
         search_recency_filter="week",
-        search_domain_filter=DOMAINS_REGULATORY + ["ft.com", "reuters.com"],
-        search_language_filter=["en", "de"],
+        search_domain_filter=DOMAINS_REGULATORY + ["ft.com", "reuters.com", "ecb.europa.eu", "eba.europa.eu", "esma.europa.eu", "european-commission.europa.eu"],
+        search_language_filter=["en", "de", "fr"],
         user_location=_eu_location(),
         search_context_size="high",
         return_citations=True,
@@ -1064,16 +1071,31 @@ Return ONLY valid JSON."""
         data = json.loads(cleaned)
         raw_content = data.get("content", raw)
         hashtags = data.get("hashtags", [])
+        post_sources = data.get("sources", [])
         hashtag_line = " ".join(
             h if h.startswith("#") else f"#{h}" for h in hashtags
         )
         full = strip_trailing_hashtags(raw_content)
+
+        # Append sources section if available (from post or Perplexity citations)
+        source_lines = []
+        if post_sources:
+            source_lines = post_sources[:5]
+        elif citations:
+            source_lines = [c for c in citations[:5]]
+        if source_lines:
+            full += "\n\nQuellen: " + " | ".join(str(s) for s in source_lines)
+
         if hashtag_line:
             full += "\n\n" + hashtag_line
         full = ensure_footer(full)
         return {"content": full, "hashtags": hashtags}
     except json.JSONDecodeError:
-        return {"content": ensure_footer(raw), "hashtags": []}
+        # Fallback: append Perplexity citations if available
+        fallback = raw
+        if citations:
+            fallback += "\n\nQuellen: " + " | ".join(str(c) for c in citations[:5])
+        return {"content": ensure_footer(fallback), "hashtags": []}
 
 
 # ─── 8) Generate Subject Alternatives ───────────────────────────
@@ -1111,3 +1133,4 @@ Generate 3 compelling subject lines."""
         if line.strip() and 5 < len(line.strip()) < 100
     ]
     return subjects or [f"Compliance Partnership Opportunity - {company_name}"]
+

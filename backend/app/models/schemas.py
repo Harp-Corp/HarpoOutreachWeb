@@ -89,7 +89,7 @@ class CompanySize(str, Enum):
 
 class LeadStatus(str, Enum):
     identified = "Identified"
-    contacted = "Contacted"
+    email_verified = "Email Verified"
     followed_up = "Followed Up"
     qualified = "Qualified"
     converted = "Converted"
@@ -289,3 +289,4 @@ class SettingsUpdate(BaseModel):
     selected_industries: Optional[list[str]] = None
     selected_regions: Optional[list[str]] = None
     selected_company_sizes: Optional[list[str]] = None
+

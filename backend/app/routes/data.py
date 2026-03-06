@@ -361,3 +361,4 @@ async def update_settings(data: dict, db: Session = Depends(get_db)):
 async def dashboard(db: Session = Depends(get_db)):
     stats = db_svc.get_dashboard_stats(db)
     return {"data": stats}
+

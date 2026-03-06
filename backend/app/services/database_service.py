@@ -263,6 +263,7 @@ def save_address_book_entry(db: Session, data: dict) -> AddressBookDB:
             phone=data.get("phone", ""),
             notes=data.get("notes", ""),
             source=data.get("source", "manual"),
+            contact_status=data.get("contact_status", "active"),
             created_at=data.get("created_at", datetime.utcnow()),
             updated_at=datetime.utcnow(),
         )
@@ -441,3 +442,4 @@ def get_dashboard_stats(db: Session) -> dict:
         "leads_by_industry": by_industry,
         "address_book_count": ab_count,
     }
+

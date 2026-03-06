@@ -175,8 +175,8 @@ async def verify_email(
         logger.error(f"Email verification failed for lead {lead_id}: {ex}")
         raise HTTPException(500, f"Verifikation fehlgeschlagen: {str(ex)[:200]}")
 
-    # Update lead — only email fields, NEVER change status automatically
-    # Status changes (e.g. to "Contacted") happen ONLY when user explicitly sends an email
+    # Update lead — only email fields, NEVER change status to 'Contacted' automatically
+    # Status transitions to "Email Sent" happen ONLY when user explicitly sends an email
     lead.email = result["email"]
     lead.email_verified = result["verified"]
     lead.verification_notes = result.get("notes", "")
@@ -222,4 +222,5 @@ async def verify_all_emails(db: Session = Depends(get_db)):
         "total": len(unverified),
         "errors": errors[:5] if errors else [],
     }
+
 

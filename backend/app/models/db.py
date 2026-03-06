@@ -152,8 +152,18 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 def init_db():
-    """Create all tables (idempotent)."""
+    """Create all tables (idempotent) + run lightweight column migrations."""
     Base.metadata.create_all(bind=engine)
+    # ── Column migrations (ALTER TABLE for columns added after initial create) ──
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "address_book" in insp.get_table_names():
+        cols = [c["name"] for c in insp.get_columns("address_book")]
+        if "contact_status" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE address_book ADD COLUMN contact_status VARCHAR NOT NULL DEFAULT 'active'"
+                ))
 
 
 def get_db():
@@ -163,3 +173,4 @@ def get_db():
         yield db
     finally:
         db.close()
+
