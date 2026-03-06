@@ -20,6 +20,15 @@ from ..services import perplexity_service as pplx
 
 router = APIRouter(prefix="/email", tags=["Email Pipeline"])
 
+SUBJECT_TAG = "[Comply.Reg]"
+
+
+def _tagged_subject(subject: str) -> str:
+    """Ensure the subject starts with [Comply.Reg] tag for reply-tracking."""
+    if SUBJECT_TAG in subject:
+        return subject
+    return f"{SUBJECT_TAG} {subject}"
+
 
 import logging
 import time as _time
@@ -432,10 +441,12 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
     _logger.info(f"Sending email to {lead.email} (lead={lead_id}, subject='{draft.get('subject', '')[:50]}')")
 
+    send_subject = _tagged_subject(draft["subject"])
+
     async def _try_send(token):
         return await gmail.send_email(
             to=lead.email, from_addr=sender,
-            subject=draft["subject"], body=draft["body"],
+            subject=send_subject, body=draft["body"],
             access_token=token,
         )
 
@@ -462,6 +473,7 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
 
     lead.date_email_sent = datetime.utcnow()
     draft["sent_date"] = datetime.utcnow().isoformat()
+    draft["subject"] = send_subject  # persist tagged subject
     lead.drafted_email_json = json.dumps(draft)
     lead.status = "Email Sent"
     lead.delivery_status = "Delivered"
@@ -511,18 +523,20 @@ async def send_all_approved(db: Session = Depends(get_db)):
             continue
 
         draft = json.loads(lead.drafted_email_json)
+        send_subject = _tagged_subject(draft["subject"])
         _logger.info(f"[send-all] Sending to {lead.email} ({lead.name})")
         try:
             await gmail.send_email(
                 to=lead.email,
                 from_addr=sender,
-                subject=draft["subject"],
+                subject=send_subject,
                 body=draft["body"],
                 access_token=access_token,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
+            draft["subject"] = send_subject  # persist tagged subject
             lead.drafted_email_json = json.dumps(draft)
             lead.delivery_status = "Delivered"
             lead.updated_at = datetime.utcnow()
@@ -539,12 +553,13 @@ async def send_all_approved(db: Session = Depends(get_db)):
                 access_token = _refresh_google_token(db)
                 await gmail.send_email(
                     to=lead.email, from_addr=sender,
-                    subject=draft["subject"], body=draft["body"],
+                    subject=send_subject, body=draft["body"],
                     access_token=access_token,
                 )
                 lead.status = "Email Sent"
                 lead.date_email_sent = datetime.utcnow()
                 draft["sent_date"] = datetime.utcnow().isoformat()
+                draft["subject"] = send_subject  # persist tagged subject
                 lead.drafted_email_json = json.dumps(draft)
                 lead.delivery_status = "Delivered"
                 lead.updated_at = datetime.utcnow()
@@ -632,17 +647,20 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
 
         _logger.info(f"Sending to {lead.email} ({lead.name} @ {lead.company}), subject='{draft.get('subject', '')[:60]}'")
 
+        send_subject = _tagged_subject(draft["subject"])
+
         try:
             await gmail.send_email(
                 to=lead.email,
                 from_addr=sender,
-                subject=draft["subject"],
+                subject=send_subject,
                 body=draft["body"],
                 access_token=access_token,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
+            draft["subject"] = send_subject  # persist tagged subject
             lead.drafted_email_json = json.dumps(draft)
             lead.delivery_status = "Delivered"
             lead.updated_at = datetime.utcnow()
@@ -662,12 +680,13 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
                 access_token = _refresh_google_token(db)
                 await gmail.send_email(
                     to=lead.email, from_addr=sender,
-                    subject=draft["subject"], body=draft["body"],
+                    subject=send_subject, body=draft["body"],
                     access_token=access_token,
                 )
                 lead.status = "Email Sent"
                 lead.date_email_sent = datetime.utcnow()
                 draft["sent_date"] = datetime.utcnow().isoformat()
+                draft["subject"] = send_subject  # persist tagged subject
                 lead.drafted_email_json = json.dumps(draft)
                 lead.delivery_status = "Delivered"
                 lead.updated_at = datetime.utcnow()

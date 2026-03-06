@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..models.db import LeadDB, get_db
 from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
-from .email_pipeline import _get_access_token, _refresh_google_token
+from .email_pipeline import _get_access_token, _refresh_google_token, SUBJECT_TAG
 
 logger = logging.getLogger("harpo.analytics")
 
@@ -103,7 +103,7 @@ async def check_replies(db: Session = Depends(get_db)):
 
     try:
         # Check replies
-        reply_msgs = await gmail.check_replies(subjects, lead_emails, access_token)
+        reply_msgs = await gmail.check_replies(subjects, lead_emails, access_token, subject_tag=SUBJECT_TAG)
 
         for msg in reply_msgs:
             from_addr = msg.get("from", "").lower()

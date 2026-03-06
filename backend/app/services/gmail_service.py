@@ -231,21 +231,17 @@ async def check_replies(
     sent_subjects: list[str],
     lead_emails: list[str],
     access_token: str,
+    subject_tag: str = "[Comply.Reg]",
 ) -> list[dict]:
-    """Check for replies to sent emails."""
+    """Check for replies to sent emails.
+    Filters by subject_tag to only find replies to campaign emails."""
     all_replies = []
     seen_ids: set[str] = set()
 
-    # Subject-based search
-    for subj in sent_subjects:
-        clean = subj
-        for prefix in ["Re: ", "RE: ", "Aw: ", "AW: ", "Fwd: "]:
-            clean = clean.replace(prefix, "")
-        clean = clean.strip()
-        if not clean:
-            continue
-        query = f'subject:"{clean}" -from:me newer_than:90d'
-        msgs = await search_gmail(query, access_token, max_results=10)
+    # Primary search: find emails with our campaign tag in the subject
+    if subject_tag:
+        query = f'subject:"{subject_tag}" -from:me newer_than:90d'
+        msgs = await search_gmail(query, access_token, max_results=50)
         for msg in msgs:
             if msg["id"] in seen_ids:
                 continue
@@ -254,12 +250,12 @@ async def check_replies(
                 continue
             all_replies.append(msg)
 
-    # Fallback: search by lead email addresses
+    # Fallback: also search by lead email addresses (only if they sent TO us)
     for email in lead_emails:
         email_clean = email.lower().strip()
         if not email_clean:
             continue
-        query = f"from:{email_clean} newer_than:90d"
+        query = f'from:{email_clean} subject:"{subject_tag}" newer_than:90d'
         msgs = await search_gmail(query, access_token, max_results=5)
         for msg in msgs:
             if msg["id"] in seen_ids:
