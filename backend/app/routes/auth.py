@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models.db import get_db
 from ..services import database_service as db_svc
 from ..services import google_auth_service as gauth
@@ -18,9 +19,10 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 async def google_login(db: Session = Depends(get_db)):
     """Redirect user to Google OAuth consent screen."""
     client_id = db_svc.get_setting(db, "google_client_id")
+    redirect_uri = db_svc.get_setting(db, "google_redirect_uri")
     if not client_id:
         raise HTTPException(400, "Google Client ID nicht konfiguriert.")
-    url = gauth.get_auth_url(client_id=client_id)
+    url = gauth.get_auth_url(client_id=client_id, redirect_uri=redirect_uri)
     return RedirectResponse(url)
 
 
@@ -29,12 +31,14 @@ async def google_callback(code: str, db: Session = Depends(get_db)):
     """Handle OAuth callback, exchange code for tokens."""
     client_id = db_svc.get_setting(db, "google_client_id")
     client_secret = db_svc.get_setting(db, "google_client_secret")
+    redirect_uri = db_svc.get_setting(db, "google_redirect_uri")
 
     if not client_id or not client_secret:
         raise HTTPException(400, "Google Credentials nicht konfiguriert.")
 
     tokens = await gauth.exchange_code(
-        code, client_id=client_id, client_secret=client_secret
+        code, client_id=client_id, client_secret=client_secret,
+        redirect_uri=redirect_uri,
     )
 
     # Save tokens
@@ -49,8 +53,9 @@ async def google_callback(code: str, db: Session = Depends(get_db)):
     if email:
         db_svc.set_setting(db, "google_user_email", email)
 
-    # Redirect to frontend
-    return RedirectResponse("/?auth=success")
+    # Redirect to frontend (not backend!)
+    frontend_url = settings.frontend_url.rstrip("/")
+    return RedirectResponse(f"{frontend_url}/?auth=success")
 
 
 @router.get("/status")

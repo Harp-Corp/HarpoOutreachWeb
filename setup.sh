@@ -62,7 +62,7 @@ SECRET_KEY=${SECRET_KEY}
 # Google OAuth
 GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
 GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-GOOGLE_REDIRECT_URI=http://localhost:8000/api/auth/google/callback
+GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/google/callback
 
 # Perplexity API
 PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
@@ -87,7 +87,7 @@ echo ""
 echo "── Wichtig ────────────────────────────────────"
 echo "   Google Cloud Console → APIs & Credentials:"
 echo "   Redirect URI muss eingetragen sein:"
-echo "   → http://localhost:8000/api/auth/google/callback"
+echo "   → http://localhost:3000/api/auth/google/callback"
 echo ""
 echo "── Starten ────────────────────────────────────"
 echo "   docker-compose up --build"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -27,11 +28,11 @@ def get_auth_url(client_id: str = "", redirect_uri: str = "") -> str:
     """Build the Google OAuth consent URL."""
     cid = client_id or settings.google_client_id
     ruri = redirect_uri or settings.google_redirect_uri
-    scope = " ".join(SCOPES)
+    scope = quote(" ".join(SCOPES))
     return (
         f"{AUTH_URL}?"
         f"client_id={cid}"
-        f"&redirect_uri={ruri}"
+        f"&redirect_uri={quote(ruri, safe='')}"
         f"&response_type=code"
         f"&scope={scope}"
         f"&access_type=offline"
