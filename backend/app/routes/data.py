@@ -251,18 +251,53 @@ async def remove_address_book_entry(entry_id: UUID, db: Session = Depends(get_db
     return {"success": True}
 
 
+@router.put("/address-book/{entry_id}/status")
+async def update_address_book_status(entry_id: UUID, data: dict, db: Session = Depends(get_db)):
+    """Change a contact's status: 'active' (nutzbar) or 'blocked' (gesperrt)."""
+    entry = db_svc.get_address_book_entry(db, entry_id)
+    if not entry:
+        raise HTTPException(404, "Kontakt nicht gefunden.")
+    new_status = data.get("contact_status", "active")
+    if new_status not in ("active", "blocked"):
+        raise HTTPException(400, "Ungültiger Status. Erlaubt: 'active', 'blocked'.")
+
+    entry.contact_status = new_status
+    entry.updated_at = datetime.utcnow()
+
+    # Sync with blocklist
+    if new_status == "blocked":
+        db_svc.add_to_blocklist(db, entry.email, reason="Opt-out via Adressbuch")
+    elif new_status == "active":
+        db_svc.remove_from_blocklist(db, entry.email)
+
+    db.commit()
+    db.refresh(entry)
+    return {"success": True, "data": db_svc.address_book_to_response(entry)}
+
+
+@router.delete("/address-book/{entry_id}/permanent")
+async def permanently_delete_address_book_entry(entry_id: UUID, db: Session = Depends(get_db)):
+    """Permanently delete a contact from the address book."""
+    entry = db_svc.get_address_book_entry(db, entry_id)
+    if not entry:
+        raise HTTPException(404, "Kontakt nicht gefunden.")
+    db_svc.delete_address_book_entry(db, entry_id)
+    return {"success": True}
+
+
 @router.get("/address-book/export")
 async def export_address_book_csv(db: Session = Depends(get_db)):
     """Export address book as CSV."""
     entries = db_svc.load_address_book(db)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Name", "Titel", "Unternehmen", "E-Mail", "Verifiziert", "LinkedIn", "Telefon", "Quelle", "Notizen"])
+    writer.writerow(["Name", "Titel", "Unternehmen", "E-Mail", "Verifiziert", "LinkedIn", "Telefon", "Quelle", "Status", "Notizen"])
     for e in entries:
+        status_label = "Nutzbar" if (getattr(e, 'contact_status', 'active') or 'active') == 'active' else "Gesperrt"
         writer.writerow([
             e.name, e.title, e.company, e.email,
             "Ja" if e.email_verified else "Nein",
-            e.linkedin_url, e.phone, e.source, e.notes,
+            e.linkedin_url, e.phone, e.source, status_label, e.notes,
         ])
     output.seek(0)
     return StreamingResponse(

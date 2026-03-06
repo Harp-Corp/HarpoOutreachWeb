@@ -16,6 +16,7 @@ function App() {
   const [showAddForm, setShowAddForm] = useState(false)
   // Campaign source toggle
   const [campaignSource, setCampaignSource] = useState('search') // 'search' | 'addressbook'
+  const [abFilter, setAbFilter] = useState('all') // 'all' | 'active' | 'blocked'
 
   const [selIndustries, setSelIndustries] = useState([])
   const [selRegions, setSelRegions] = useState([])
@@ -127,6 +128,22 @@ function App() {
     try { await fetchJson(`${API}/data/address-book/${entryId}`, { method: 'DELETE' }); await loadAddressBook() }
     catch (e) { setError(e.message) }
   }
+  const setContactStatus = async (entryId, newStatus) => {
+    setLoading(true); setError('')
+    try {
+      await fetchJson(`${API}/data/address-book/${entryId}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contact_status: newStatus }) })
+      showSuccess(newStatus === 'blocked' ? 'Kontakt gesperrt' : 'Kontakt freigeschaltet')
+      await loadAddressBook()
+    } catch (e) { setError(e.message) }
+    setLoading(false)
+  }
+  const permanentlyDeleteContact = async (entryId) => {
+    if (!confirm('Kontakt endgültig löschen?')) return
+    setLoading(true); setError('')
+    try { await fetchJson(`${API}/data/address-book/${entryId}/permanent`, { method: 'DELETE' }); showSuccess('Kontakt gelöscht'); await loadAddressBook() }
+    catch (e) { setError(e.message) }
+    setLoading(false)
+  }
   const addManualContact = async (formData) => {
     setLoading(true); setError('')
     try {
@@ -167,7 +184,8 @@ function App() {
   const importAddressBookToCampaign = async () => {
     setLoading(true); setError('')
     let created = 0
-    for (const contact of addressBook) {
+    const activeContacts = addressBook.filter(c => (c.contact_status || 'active') === 'active')
+    for (const contact of activeContacts) {
       try {
         await fetchJson(`${API}/data/leads`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -321,6 +339,14 @@ function App() {
                   <button className="btn btn-primary" onClick={() => setShowAddForm(!showAddForm)}>{showAddForm ? 'Abbrechen' : '+ Kontakt'}</button>
                 </div>
               </div>
+              {/* Filter bar */}
+              {addressBook.length > 0 && (
+                <div className="filter-bar">
+                  <button className={`btn btn-sm ${abFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('all')}>Alle ({addressBook.length})</button>
+                  <button className={`btn btn-sm ${abFilter === 'active' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('active')}>Nutzbar ({addressBook.filter(a => (a.contact_status || 'active') === 'active').length})</button>
+                  <button className={`btn btn-sm ${abFilter === 'blocked' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('blocked')}>Gesperrt ({addressBook.filter(a => a.contact_status === 'blocked').length})</button>
+                </div>
+              )}
               {showAddForm && (
                 <form className="add-form" onSubmit={e => { e.preventDefault(); const fd = new FormData(e.target); addManualContact({ name: fd.get('name'), title: fd.get('title'), company: fd.get('company'), email: fd.get('email'), linkedin_url: fd.get('linkedin_url') || '', phone: fd.get('phone') || '' }) }}>
                   <div className="form-row">
@@ -337,20 +363,34 @@ function App() {
                 </form>
               )}
               <div className="list">
-                {addressBook.map(a => (
-                  <div key={a.id} className="list-item">
-                    <div className="list-main">
-                      <strong>{a.name}</strong>
-                      <span className="sub">{a.title} · {a.company}</span>
-                      <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                {addressBook
+                  .filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked'))
+                  .map(a => {
+                  const isBlocked = a.contact_status === 'blocked'
+                  return (
+                    <div key={a.id} className={`list-item ${isBlocked ? 'list-item-blocked' : ''}`}>
+                      <div className="list-main">
+                        <strong>{a.name}</strong>
+                        <span className="sub">{a.title} · {a.company}</span>
+                        <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                      </div>
+                      <div className="list-actions">
+                        <span className={`badge ${a.source === 'verified' ? 'badge-green' : 'badge-blue'}`}>{a.source === 'verified' ? 'Verifiziert' : 'Manuell'}</span>
+                        {isBlocked
+                          ? <span className="badge badge-red">Gesperrt</span>
+                          : <span className="badge badge-green">Nutzbar</span>
+                        }
+                        {isBlocked
+                          ? <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => setContactStatus(a.id, 'active')} title="Für Kontaktaufnahme freischalten">Freischalten</button>
+                          : <button className="btn btn-ghost btn-sm" style={{color:'#f59e0b'}} disabled={loading} onClick={() => setContactStatus(a.id, 'blocked')} title="Für Kontaktaufnahme sperren (Opt-out)">Sperren</button>
+                        }
+                        <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} disabled={loading} onClick={() => permanentlyDeleteContact(a.id)} title="Endgültig löschen">Löschen</button>
+                      </div>
                     </div>
-                    <div className="list-actions">
-                      <span className={`badge ${a.source === 'verified' ? 'badge-green' : 'badge-blue'}`}>{a.source === 'verified' ? 'Verifiziert' : 'Manuell'}</span>
-                      <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => removeFromAddressBook(a.id)}>×</button>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
                 {addressBook.length === 0 && <p className="empty">Adressbuch ist leer. Kontakte über Suche verifizieren und übernehmen, oder manuell eintragen.</p>}
+                {addressBook.length > 0 && addressBook.filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked')).length === 0 && <p className="empty">Keine Kontakte mit diesem Filter.</p>}
               </div>
             </div>
           </div>
@@ -376,9 +416,9 @@ function App() {
               {campaignSource === 'addressbook' && addressBook.length > 0 && (
                 <div style={{marginTop:'0.75rem'}}>
                   <button className="btn btn-primary" disabled={loading} onClick={importAddressBookToCampaign}>
-                    {addressBook.length} Kontakte aus Adressbuch als Leads importieren
+                    {addressBook.filter(c => (c.contact_status || 'active') === 'active').length} nutzbare Kontakte als Leads importieren
                   </button>
-                  <span className="hint" style={{marginLeft:'0.5rem'}}>Erstellt Leads für die E-Mail-Pipeline.</span>
+                  <span className="hint" style={{marginLeft:'0.5rem'}}>Gesperrte Kontakte werden übersprungen.</span>
                 </div>
               )}
               {campaignSource === 'addressbook' && addressBook.length === 0 && (

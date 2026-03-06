@@ -101,12 +101,14 @@ class AddressBookDB(Base):
     phone = Column(String, nullable=False, default="")
     notes = Column(Text, nullable=False, default="")
     source = Column(String, nullable=False, default="")  # "verified" or "manual"
+    contact_status = Column(String, nullable=False, default="active")  # "active" | "blocked"
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
         Index("idx_addressbook_email", "email"),
         Index("idx_addressbook_company", "company"),
+        Index("idx_addressbook_status", "contact_status"),
     )
 
 

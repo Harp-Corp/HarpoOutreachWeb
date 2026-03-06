@@ -304,6 +304,7 @@ def address_book_to_response(entry: AddressBookDB) -> dict:
         "phone": entry.phone,
         "notes": entry.notes,
         "source": entry.source,
+        "contact_status": getattr(entry, "contact_status", "active") or "active",
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
     }
 
