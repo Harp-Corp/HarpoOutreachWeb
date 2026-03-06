@@ -21,52 +21,85 @@ from ..services import perplexity_service as pplx
 router = APIRouter(prefix="/email", tags=["Email Pipeline"])
 
 
+import logging
+import time as _time
+
+import httpx as _httpx
+
+_logger = logging.getLogger("harpo.email_pipeline")
+
+
+def _refresh_google_token(db: Session) -> str:
+    """Refresh the Google access token using the refresh token. Returns new access token."""
+    refresh_tok = db_svc.get_setting(db, "google_refresh_token")
+    if not refresh_tok:
+        raise HTTPException(401, "Kein Refresh-Token vorhanden. Bitte erneut mit Google verbinden.")
+    client_id = db_svc.get_setting(db, "google_client_id")
+    client_secret = db_svc.get_setting(db, "google_client_secret")
+    if not client_id or not client_secret:
+        raise HTTPException(401, "Google OAuth Credentials fehlen. Bitte erneut mit Google verbinden.")
+
+    _logger.info("Refreshing Google access token...")
+    resp = _httpx.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "refresh_token": refresh_tok,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "refresh_token",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        error_detail = resp.text[:300]
+        _logger.error(f"Token refresh failed ({resp.status_code}): {error_detail}")
+        raise HTTPException(401, f"Token-Refresh fehlgeschlagen ({resp.status_code}): {error_detail}")
+
+    data = resp.json()
+    new_token = data.get("access_token", "")
+    if not new_token:
+        raise HTTPException(401, "Token-Refresh lieferte kein neues Token.")
+
+    db_svc.set_setting(db, "google_access_token", new_token)
+    db_svc.set_setting(db, "google_token_expiry", str(_time.time() + data.get("expires_in", 3600)))
+    if data.get("refresh_token"):
+        db_svc.set_setting(db, "google_refresh_token", data["refresh_token"])
+    _logger.info("Token refresh successful")
+    return new_token
+
+
 def _get_access_token(db: Session) -> str:
-    """Get a valid Google access token — auto-refresh if expired."""
+    """Get a valid Google access token — auto-refresh if expired or missing expiry."""
     token = db_svc.get_setting(db, "google_access_token")
     if not token:
-        raise HTTPException(401, "Nicht mit Google authentifiziert.")
+        raise HTTPException(401, "Nicht mit Google authentifiziert. Bitte unter Einstellungen mit Google verbinden.")
 
-    # Check expiry and refresh automatically
+    # Check expiry and refresh proactively
     expiry = db_svc.get_setting(db, "google_token_expiry")
-    if expiry:
-        import time
+    needs_refresh = False
+
+    if not expiry:
+        # No expiry recorded — always refresh to be safe
+        _logger.warning("No token expiry recorded, refreshing proactively")
+        needs_refresh = True
+    else:
         try:
-            if float(expiry) < time.time() + 60:  # refresh 60s before actual expiry
-                refresh_tok = db_svc.get_setting(db, "google_refresh_token")
-                if not refresh_tok:
-                    raise HTTPException(401, "Token abgelaufen und kein Refresh-Token vorhanden. Bitte erneut mit Google verbinden.")
-                client_id = db_svc.get_setting(db, "google_client_id")
-                client_secret = db_svc.get_setting(db, "google_client_secret")
-                # Synchronous refresh via httpx
-                import httpx
-                resp = httpx.post(
-                    "https://oauth2.googleapis.com/token",
-                    data={
-                        "refresh_token": refresh_tok,
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "grant_type": "refresh_token",
-                    },
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    new_token = data.get("access_token", "")
-                    if new_token:
-                        db_svc.set_setting(db, "google_access_token", new_token)
-                        db_svc.set_setting(db, "google_token_expiry",
-                                           time.time() + data.get("expires_in", 3600))
-                        if data.get("refresh_token"):
-                            db_svc.set_setting(db, "google_refresh_token", data["refresh_token"])
-                        return new_token
-                    else:
-                        raise HTTPException(401, "Token-Refresh lieferte kein neues Token.")
-                else:
-                    error_detail = resp.text[:200]
-                    raise HTTPException(401, f"Token-Refresh fehlgeschlagen ({resp.status_code}): {error_detail}")
+            expiry_ts = float(expiry)
+            if expiry_ts < _time.time() + 120:  # refresh 2 min before actual expiry
+                _logger.info(f"Token expired or expiring soon (expiry={expiry_ts}, now={_time.time()})")
+                needs_refresh = True
         except (ValueError, TypeError):
-            pass  # expiry value unparseable, try with existing token
+            _logger.warning(f"Unparseable token expiry '{expiry}', refreshing proactively")
+            needs_refresh = True
+
+    if needs_refresh:
+        try:
+            return _refresh_google_token(db)
+        except HTTPException:
+            raise
+        except Exception as e:
+            _logger.error(f"Token refresh failed unexpectedly: {e}")
+            # Fall through to try with existing token
 
     return token
 
@@ -397,27 +430,45 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
         return {"success": False, "error": f"E-Mail an {lead.name} ist geplant fuer {lead.scheduled_send_date}. Uebersprungen."}
 
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
-    try:
-        msg_id = await gmail.send_email(
-            to=lead.email,
-            from_addr=sender,
-            subject=draft["subject"],
-            body=draft["body"],
-            access_token=access_token,
+    _logger.info(f"Sending email to {lead.email} (lead={lead_id}, subject='{draft.get('subject', '')[:50]}')")
+
+    async def _try_send(token):
+        return await gmail.send_email(
+            to=lead.email, from_addr=sender,
+            subject=draft["subject"], body=draft["body"],
+            access_token=token,
         )
-        lead.date_email_sent = datetime.utcnow()
-        draft["sent_date"] = datetime.utcnow().isoformat()
-        lead.drafted_email_json = json.dumps(draft)
-        lead.status = "Email Sent"
-        lead.delivery_status = "Delivered"
-        lead.updated_at = datetime.utcnow()
-        db.commit()
-        return {"success": True, "message_id": msg_id}
+
+    try:
+        msg_id = await _try_send(access_token)
+    except PermissionError:
+        # Token expired mid-request — refresh and retry once
+        _logger.warning(f"Gmail 401 for {lead.email}, refreshing token and retrying")
+        try:
+            access_token = _refresh_google_token(db)
+            msg_id = await _try_send(access_token)
+        except Exception as retry_e:
+            _logger.error(f"Retry also failed for {lead.email}: {retry_e}")
+            lead.delivery_status = "Failed"
+            lead.updated_at = datetime.utcnow()
+            db.commit()
+            raise HTTPException(500, f"Senden fehlgeschlagen (auch nach Token-Refresh): {str(retry_e)}")
     except Exception as e:
+        _logger.error(f"Send failed for {lead.email}: {e}")
         lead.delivery_status = "Failed"
         lead.updated_at = datetime.utcnow()
         db.commit()
         raise HTTPException(500, f"Senden fehlgeschlagen: {str(e)}")
+
+    lead.date_email_sent = datetime.utcnow()
+    draft["sent_date"] = datetime.utcnow().isoformat()
+    lead.drafted_email_json = json.dumps(draft)
+    lead.status = "Email Sent"
+    lead.delivery_status = "Delivered"
+    lead.updated_at = datetime.utcnow()
+    db.commit()
+    _logger.info(f"Email sent successfully to {lead.email}, msg_id={msg_id}")
+    return {"success": True, "message_id": msg_id}
 
 
 # ─── Send All Approved ────────────────────────────────────────
@@ -460,6 +511,7 @@ async def send_all_approved(db: Session = Depends(get_db)):
             continue
 
         draft = json.loads(lead.drafted_email_json)
+        _logger.info(f"[send-all] Sending to {lead.email} ({lead.name})")
         try:
             await gmail.send_email(
                 to=lead.email,
@@ -476,11 +528,36 @@ async def send_all_approved(db: Session = Depends(get_db)):
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
+            _logger.info(f"[send-all] Sent to {lead.email}")
 
             # Random delay 30-90s between sends
             if i < len(batch) - 1:
                 await asyncio.sleep(random.uniform(30, 90))
-        except Exception:
+        except PermissionError:
+            _logger.warning(f"[send-all] Gmail 401 for {lead.email}, refreshing token")
+            try:
+                access_token = _refresh_google_token(db)
+                await gmail.send_email(
+                    to=lead.email, from_addr=sender,
+                    subject=draft["subject"], body=draft["body"],
+                    access_token=access_token,
+                )
+                lead.status = "Email Sent"
+                lead.date_email_sent = datetime.utcnow()
+                draft["sent_date"] = datetime.utcnow().isoformat()
+                lead.drafted_email_json = json.dumps(draft)
+                lead.delivery_status = "Delivered"
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                sent += 1
+            except Exception as retry_e:
+                _logger.error(f"[send-all] Retry failed for {lead.email}: {retry_e}")
+                lead.delivery_status = "Failed"
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                failed += 1
+        except Exception as e:
+            _logger.error(f"[send-all] Failed for {lead.email}: {e}")
             lead.delivery_status = "Failed"
             lead.updated_at = datetime.utcnow()
             db.commit()
@@ -506,28 +583,42 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
     access_token = _get_access_token(db)
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
 
+    _logger.info(f"send-batch called with {len(data.lead_ids)} lead IDs, sender={sender}")
+
     sent = 0
     failed = 0
     skipped = 0
+    errors = []
 
     for i, lid_str in enumerate(data.lead_ids):
         try:
             lid = UUID(lid_str)
         except ValueError:
+            _logger.error(f"Invalid UUID: {lid_str}")
             failed += 1
+            errors.append(f"Ungültige ID: {lid_str}")
             continue
 
         lead = db_svc.get_lead(db, lid)
-        if not lead or not lead.drafted_email_json:
+        if not lead:
+            _logger.error(f"Lead not found: {lid}")
             failed += 1
+            errors.append(f"Lead {lid} nicht gefunden")
+            continue
+        if not lead.drafted_email_json:
+            _logger.error(f"Lead {lid} ({lead.name}) has no draft")
+            failed += 1
+            errors.append(f"{lead.name}: kein Entwurf")
             continue
 
         draft = json.loads(lead.drafted_email_json)
         if not draft.get("is_approved"):
+            _logger.warning(f"Lead {lid} ({lead.name}) draft not approved")
             skipped += 1
             continue
 
         if db_svc.is_blocked(db, lead.email):
+            _logger.warning(f"Lead {lid} ({lead.name}) is on blocklist")
             lead.status = "Do Not Contact"
             lead.opted_out = True
             db.commit()
@@ -535,8 +626,11 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
             continue
 
         if lead.date_email_sent:
+            _logger.info(f"Lead {lid} ({lead.name}) already sent on {lead.date_email_sent}")
             skipped += 1
             continue
+
+        _logger.info(f"Sending to {lead.email} ({lead.name} @ {lead.company}), subject='{draft.get('subject', '')[:60]}'")
 
         try:
             await gmail.send_email(
@@ -554,17 +648,52 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
+            _logger.info(f"Successfully sent to {lead.email}")
 
             # Rate limit: random 30-90s delay between sends
             if i < len(data.lead_ids) - 1:
-                await asyncio.sleep(random.uniform(30, 90))
+                delay = random.uniform(30, 90)
+                _logger.info(f"Rate limit delay: {delay:.0f}s before next send")
+                await asyncio.sleep(delay)
+        except PermissionError:
+            # Token expired — refresh and retry
+            _logger.warning(f"Gmail 401 for {lead.email}, refreshing token")
+            try:
+                access_token = _refresh_google_token(db)
+                await gmail.send_email(
+                    to=lead.email, from_addr=sender,
+                    subject=draft["subject"], body=draft["body"],
+                    access_token=access_token,
+                )
+                lead.status = "Email Sent"
+                lead.date_email_sent = datetime.utcnow()
+                draft["sent_date"] = datetime.utcnow().isoformat()
+                lead.drafted_email_json = json.dumps(draft)
+                lead.delivery_status = "Delivered"
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                sent += 1
+                _logger.info(f"Sent on retry to {lead.email}")
+            except Exception as retry_e:
+                _logger.error(f"Retry failed for {lead.email}: {retry_e}")
+                lead.delivery_status = "Failed"
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                failed += 1
+                errors.append(f"{lead.name}: {str(retry_e)[:100]}")
         except Exception as e:
+            _logger.error(f"Send failed for {lead.email}: {e}")
             lead.delivery_status = "Failed"
             lead.updated_at = datetime.utcnow()
             db.commit()
             failed += 1
+            errors.append(f"{lead.name}: {str(e)[:100]}")
 
-    return {"success": True, "sent": sent, "failed": failed, "skipped": skipped}
+    _logger.info(f"send-batch result: sent={sent}, failed={failed}, skipped={skipped}")
+    result = {"success": True, "sent": sent, "failed": failed, "skipped": skipped}
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 # ─── Follow-Up Draft ─────────────────────────────────────────

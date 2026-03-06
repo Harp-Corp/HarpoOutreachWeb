@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import datetime
-from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,52 +12,11 @@ from sqlalchemy.orm import Session
 from ..models.db import LeadDB, get_db
 from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
+from .email_pipeline import _get_access_token, _refresh_google_token
 
 logger = logging.getLogger("harpo.analytics")
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
-
-
-def _get_access_token(db: Session) -> str:
-    """Get a valid Google access token — auto-refresh if expired."""
-    token = db_svc.get_setting(db, "google_access_token")
-    if not token:
-        raise HTTPException(401, "Nicht mit Google authentifiziert.")
-
-    expiry = db_svc.get_setting(db, "google_token_expiry")
-    if expiry:
-        try:
-            if float(expiry) < time.time() + 60:
-                refresh_tok = db_svc.get_setting(db, "google_refresh_token")
-                if not refresh_tok:
-                    raise HTTPException(401, "Token abgelaufen. Bitte erneut mit Google verbinden.")
-                client_id = db_svc.get_setting(db, "google_client_id")
-                client_secret = db_svc.get_setting(db, "google_client_secret")
-                import httpx
-                resp = httpx.post(
-                    "https://oauth2.googleapis.com/token",
-                    data={
-                        "refresh_token": refresh_tok,
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "grant_type": "refresh_token",
-                    },
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    new_token = data.get("access_token", "")
-                    if new_token:
-                        db_svc.set_setting(db, "google_access_token", new_token)
-                        db_svc.set_setting(db, "google_token_expiry",
-                                           time.time() + data.get("expires_in", 3600))
-                        if data.get("refresh_token"):
-                            db_svc.set_setting(db, "google_refresh_token", data["refresh_token"])
-                        return new_token
-                raise HTTPException(401, "Token-Refresh fehlgeschlagen.")
-        except (ValueError, TypeError):
-            pass
-    return token
 
 
 # ─── Sent Emails Overview ────────────────────────────────────────

@@ -449,7 +449,18 @@ function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lead_ids: Array.from(campSendSelected) })
       })
-      showSuccess(`${r.sent || 0} gesendet${r.failed ? `, ${r.failed} fehlgeschlagen` : ''}${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      if (r.sent > 0) {
+        showSuccess(`${r.sent} gesendet${r.failed ? `, ${r.failed} fehlgeschlagen` : ''}${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      } else if (r.failed > 0) {
+        setError(`Versand fehlgeschlagen: ${r.failed} Fehler${r.errors ? ' \u2014 ' + r.errors.join('; ') : ''}. ${r.skipped ? r.skipped + ' übersprungen.' : ''}`)
+      } else if (r.skipped > 0) {
+        setError(`Keine E-Mails versendet (${r.skipped} übersprungen). Möglicherweise wurden die E-Mails nicht freigegeben oder bereits versendet.`)
+      } else {
+        setError('Keine E-Mails versendet. Bitte den Kampagnen-Status prüfen.')
+      }
+      if (r.errors && r.errors.length > 0 && r.sent > 0) {
+        setError(`Teilweise Fehler: ${r.errors.join('; ')}`)
+      }
       // Reload
       const leadsResp = await fetchJson(`${API}/data/leads`)
       const allLeads = leadsResp.data || []
