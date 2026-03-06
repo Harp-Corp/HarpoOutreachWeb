@@ -7,6 +7,16 @@ set -e
 REPO="https://github.com/Harp-Corp/HarpoOutreachWeb.git"
 DIR="$HOME/SpecialProjects/HarpoOutreachWeb"
 
+# Docker Compose Kommando erkennen
+if command -v docker-compose &>/dev/null; then
+    DC="docker-compose"
+elif docker compose version &>/dev/null 2>&1; then
+    DC="docker compose"
+else
+    echo "❌ Docker (Compose) nicht gefunden. Bitte Docker Desktop installieren."
+    exit 1
+fi
+
 echo "╔══════════════════════════════════════════════╗"
 echo "║  repo-now · HarpoOutreachWeb                 ║"
 echo "╚══════════════════════════════════════════════╝"
@@ -15,7 +25,7 @@ echo ""
 # 1. Altes Verzeichnis aufräumen
 if [ -d "$DIR" ]; then
     echo "⚠️  $DIR existiert – wird entfernt..."
-    (cd "$DIR" && docker-compose down 2>/dev/null) || true
+    (cd "$DIR" && $DC down 2>/dev/null) || true
     rm -rf "$DIR"
 fi
 
@@ -86,4 +96,4 @@ echo "🐳 Starte Docker Stack..."
 echo "   → PostgreSQL + Backend (Port 8000) + Frontend (Port 3000)"
 echo "   → Öffne http://localhost:3000"
 echo ""
-docker-compose up --build
+$DC up --build
