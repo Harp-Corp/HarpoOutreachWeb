@@ -1,19 +1,21 @@
 #!/bin/bash
 # ─── repo-now: HarpoOutreachWeb – Clone, Configure & Run ───────
-# Klont das Repo, erstellt .env, startet Docker.
-# Nutzung: repo-now
 set -e
 
 REPO="https://github.com/Harp-Corp/HarpoOutreachWeb.git"
 DIR="$HOME/SpecialProjects/HarpoOutreachWeb"
 
+# macOS Docker Desktop PATH fix
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.docker/bin:$PATH"
+
 # Docker Compose Kommando erkennen
-if command -v docker-compose &>/dev/null; then
-    DC="docker-compose"
-elif docker compose version &>/dev/null 2>&1; then
+DC=""
+if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
     DC="docker compose"
+elif command -v docker-compose &>/dev/null; then
+    DC="docker-compose"
 else
-    echo "❌ Docker (Compose) nicht gefunden. Bitte Docker Desktop installieren."
+    echo "❌ Docker nicht gefunden. Bitte Docker Desktop installieren."
     exit 1
 fi
 
@@ -38,7 +40,6 @@ cd "$DIR"
 # 3. .env erstellen
 echo "🔑 Erstelle .env..."
 
-# Credentials aus Umgebungsvariablen oder interaktiv
 GOOGLE_CID="${HARPO_GOOGLE_CLIENT_ID:-}"
 GOOGLE_CS="${HARPO_GOOGLE_CLIENT_SECRET:-}"
 PPLX_KEY="${HARPO_PERPLEXITY_API_KEY:-}"
@@ -92,7 +93,7 @@ chmod +x setup.sh 2>/dev/null || true
 
 # 5. Docker starten
 echo ""
-echo "🐳 Starte Docker Stack..."
+echo "🐳 Starte Docker Stack ($DC)..."
 echo "   → PostgreSQL + Backend (Port 8000) + Frontend (Port 3000)"
 echo "   → Öffne http://localhost:3000"
 echo ""
