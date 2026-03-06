@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     sender_name: str = "Martin Foerster"
     sender_email: str = "mf@harpocrates-corp.com"
 
+    # Google Sheets
+    google_spreadsheet_id: str = ""
+
     # Batch settings
     batch_size: int = 10
 
