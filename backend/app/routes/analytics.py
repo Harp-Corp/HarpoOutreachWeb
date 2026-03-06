@@ -110,8 +110,19 @@ async def check_replies(db: Session = Depends(get_db)):
 
         for msg in reply_msgs:
             from_addr = msg.get("from", "").lower()
-            msg_body = (msg.get("body", "") + " " + msg.get("snippet", "")).lower()
+            full_body = (msg.get("body", "") + " " + msg.get("snippet", ""))
             msg_subject = msg.get("subject", "")
+
+            # Extract only the reply portion (before quoted original)
+            # Common quote markers: "On ... wrote:", "Am ... schrieb:", "> ", "------"
+            reply_only = full_body
+            for marker in ["\nOn ", "\nAm ", "\n>", "\n------", "\n______"]:
+                idx = full_body.find(marker)
+                if idx > 0:
+                    reply_only = full_body[:idx]
+                    break
+            reply_lower = reply_only.lower().strip()
+            full_lower = full_body.lower()
 
             # Match to a lead
             matched_lead = None
@@ -123,11 +134,14 @@ async def check_replies(db: Session = Depends(get_db)):
             if not matched_lead:
                 continue
 
-            # Detect unsubscribe
-            is_unsub = any(kw in msg_body for kw in [
+            # Detect unsubscribe — check ONLY the reply portion (not quoted original)
+            # to avoid false positives from our own unsubscribe footer
+            unsub_keywords = [
                 "unsubscribe", "abmelden", "opt out", "opt-out",
-                "remove me", "no more", "stop", "abbestellen",
-            ])
+                "remove me", "abbestellen", "please remove",
+                "nicht mehr kontaktieren", "kein interesse",
+            ]
+            is_unsub = any(kw in reply_lower for kw in unsub_keywords)
 
             if is_unsub:
                 matched_lead.status = "Do Not Contact"
