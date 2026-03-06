@@ -192,7 +192,7 @@ function App() {
   const exportCSV = (type) => window.open(`${API}/data/${type}/export`, '_blank')
 
   const statusBadge = (status) => {
-    const c = { 'Identified':'badge-gray','Contacted':'badge-blue','Email Drafted':'badge-yellow','Email Approved':'badge-blue','Email Sent':'badge-green','Replied':'badge-green','Follow-Up Drafted':'badge-yellow','Follow-Up Sent':'badge-green','Do Not Contact':'badge-red','Closed':'badge-gray' }
+    const c = { 'Identified':'badge-gray','Email Verified':'badge-green','Contacted':'badge-blue','Email Drafted':'badge-yellow','Email Approved':'badge-blue','Email Sent':'badge-green','Replied':'badge-green','Follow-Up Drafted':'badge-yellow','Follow-Up Sent':'badge-green','Do Not Contact':'badge-red','Closed':'badge-gray' }
     return <span className={`badge ${c[status]||'badge-gray'}`}>{status}</span>
   }
   const unverifiedLeads = leads.filter(l => !l.email_verified && l.email)
