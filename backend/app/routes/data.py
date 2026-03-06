@@ -1,11 +1,14 @@
 # Data routes – CRUD for companies, leads, social posts, settings, dashboard
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..models.db import get_db
@@ -37,12 +40,64 @@ async def remove_company(company_id: UUID, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+@router.delete("/companies")
+async def remove_all_companies(db: Session = Depends(get_db)):
+    """Delete ALL companies from the database."""
+    from ..models.db import CompanyDB
+    count = db.query(CompanyDB).count()
+    db.query(CompanyDB).delete()
+    db.commit()
+    return {"success": True, "deleted": count}
+
+
+@router.get("/companies/export")
+async def export_companies_csv(db: Session = Depends(get_db)):
+    """Export all companies as CSV download."""
+    companies = db_svc.load_companies(db)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Name", "Branche", "Region", "Land", "Website", "LinkedIn", "Mitarbeiter", "Beschreibung"])
+    for c in companies:
+        writer.writerow([
+            c.name, c.industry, c.region, c.country,
+            c.website, c.linkedin_url, c.employee_count, c.description,
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=unternehmen_{datetime.utcnow().strftime('%Y%m%d')}.csv"},
+    )
+
+
 # ─── Leads ────────────────────────────────────────────────────────
 
 @router.get("/leads")
 async def list_leads(db: Session = Depends(get_db)):
     leads = db_svc.load_leads(db)
     return {"data": [db_svc.lead_db_to_response(l) for l in leads]}
+
+
+@router.get("/leads/export")
+async def export_leads_csv(db: Session = Depends(get_db)):
+    """Export all leads as CSV download."""
+    leads = db_svc.load_leads(db)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Name", "Titel", "Unternehmen", "E-Mail", "Verifiziert", "LinkedIn", "Status", "Quelle"])
+    for l in leads:
+        resp = db_svc.lead_db_to_response(l)
+        writer.writerow([
+            resp.get("name", ""), resp.get("title", ""), resp.get("company", ""),
+            resp.get("email", ""), "Ja" if resp.get("email_verified") else "Nein",
+            resp.get("linkedin_url", ""), resp.get("status", ""), resp.get("source", ""),
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=kontakte_{datetime.utcnow().strftime('%Y%m%d')}.csv"},
+    )
 
 
 @router.get("/leads/{lead_id}")
@@ -72,6 +127,16 @@ async def update_lead(lead_id: UUID, data: dict, db: Session = Depends(get_db)):
 async def remove_lead(lead_id: UUID, db: Session = Depends(get_db)):
     db_svc.delete_lead(db, lead_id)
     return {"success": True}
+
+
+@router.delete("/leads")
+async def remove_all_leads(db: Session = Depends(get_db)):
+    """Delete ALL leads from the database."""
+    from ..models.db import LeadDB
+    count = db.query(LeadDB).count()
+    db.query(LeadDB).delete()
+    db.commit()
+    return {"success": True, "deleted": count}
 
 
 # ─── Social Posts ─────────────────────────────────────────────────
