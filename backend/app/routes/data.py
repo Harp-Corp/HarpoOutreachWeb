@@ -399,6 +399,22 @@ async def add_to_blocklist(email: str, reason: str = "", db: Session = Depends(g
     return {"success": True}
 
 
+@router.delete("/blocklist/all")
+async def clear_blocklist(db: Session = Depends(get_db)):
+    """Remove ALL entries from the blocklist (admin reset)."""
+    from ..models.db import BlocklistDB
+    count = db.query(BlocklistDB).count()
+    db.query(BlocklistDB).delete()
+    # Also reset opted_out on all leads that were blocked
+    from ..models.db import LeadDB
+    db.query(LeadDB).filter(LeadDB.opted_out == True).update({
+        LeadDB.opted_out: False,
+        LeadDB.opt_out_date: None,
+    })
+    db.commit()
+    return {"success": True, "removed": count}
+
+
 @router.delete("/blocklist/{email}")
 async def remove_from_blocklist(email: str, db: Session = Depends(get_db)):
     db_svc.remove_from_blocklist(db, email)
@@ -434,3 +450,4 @@ async def update_settings(data: dict, db: Session = Depends(get_db)):
 async def dashboard(db: Session = Depends(get_db)):
     stats = db_svc.get_dashboard_stats(db)
     return {"data": stats}
+
