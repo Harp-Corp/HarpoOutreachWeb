@@ -163,10 +163,8 @@ async def generate_social_post(
     except ValueError:
         raise HTTPException(400, f"Unbekanntes Thema: {topic}")
 
-    try:
-        sp = SocialPlatform(platform)
-    except ValueError:
-        sp = SocialPlatform.linkedin
+    # Always LinkedIn — Twitter/X removed
+    sp = SocialPlatform.linkedin
 
     ind_list = [i.strip() for i in industries.split(",") if i.strip()] if industries else []
 
@@ -177,10 +175,22 @@ async def generate_social_post(
         ct.value, ct.prompt_prefix, sp.value, ind_list, previews, api_key
     )
 
+    # Add timestamp to the post content
+    timestamp_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+    content_with_ts = result["content"]
+    # Insert timestamp before the footer
+    if "\U0001f517 www.harpocrates-corp.com" in content_with_ts:
+        content_with_ts = content_with_ts.replace(
+            "\U0001f517 www.harpocrates-corp.com",
+            f"\n\n\U0001f4c5 {timestamp_str}\n\n\U0001f517 www.harpocrates-corp.com",
+        )
+    else:
+        content_with_ts += f"\n\n\U0001f4c5 {timestamp_str}"
+
     post_data = {
         "id": uuid4(),
         "platform": sp.value,
-        "content": result["content"],
+        "content": content_with_ts,
         "hashtags": result["hashtags"],
         "created_date": datetime.utcnow(),
         "is_published": False,
@@ -368,5 +378,3 @@ async def update_settings(data: dict, db: Session = Depends(get_db)):
 async def dashboard(db: Session = Depends(get_db)):
     stats = db_svc.get_dashboard_stats(db)
     return {"data": stats}
-
-

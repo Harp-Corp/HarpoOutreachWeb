@@ -827,27 +827,35 @@ async def research_challenges(company_name: str, company_industry: str, api_key:
     """Use sonar-reasoning-pro to deeply analyze a company's regulatory challenges.
     Pulls from regulatory bodies, news, annual reports, and industry analysis."""
 
-    system = """You are a regulatory compliance expert. Research SPECIFIC, CURRENT challenges for the given company.
-Analyze:
-1. Which EU regulations directly apply (DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, PSD2, AML6)?
-2. Upcoming regulatory deadlines and changes
-3. Recent enforcement actions or fines in their industry
-4. Specific compliance pain points based on company size and geography
-5. Current regulatory consultations affecting them
-Use CONCRETE data: deadlines, fine amounts, specific articles, recent cases.
-ALWAYS respond in English. Be specific — not generic."""
+    system = f"""Du bist ein Regulatory-Compliance-Experte mit tiefem Wissen über EU-Regulierung.
+Recherchiere KONKRETE, AKTUELLE regulatorische Herausforderungen für {company_name}.
 
-    user = f"""Research the top 5-7 regulatory compliance challenges for {company_name} in {company_industry}.
+KRITISCHE REGELN:
+- Recherchiere NUR über {company_name} selbst — keine anderen Unternehmen.
+- Nenne NUR Regulierungen, die TATSÄCHLICH für {company_name} in der Branche {company_industry} gelten.
+- Nutze ECHTE, VERIFIZIERBARE Fakten: konkrete Fristen, Bußgelder, Artikelnummern, aktuelle Fälle.
+- KEINE erfundenen Referenzen, Konferenzen, Artikel oder Events.
+- Wenn du etwas nicht sicher weißt, lass es weg statt es zu erfinden.
+- Antworte auf Englisch.
 
-I need SPECIFIC information for personalized outreach:
-1. Which EU/national regulations apply directly to {company_name}?
-2. What are the nearest compliance deadlines?
-3. Have there been recent fines or enforcement actions in their sector?
-4. What technology/process gaps do companies like {company_name} typically face?
-5. What upcoming regulatory changes will impact them most?
+Struktur deiner Antwort:
+1. Welche EU/nationale Regulierungen gelten DIREKT für {company_name}? (z.B. DORA, NIS2, GDPR, CSRD, EU AI Act, MiCA, PSD2, AML6)
+2. Nächste konkrete Compliance-Fristen für {company_name}
+3. Aktuelle Bußgelder oder Enforcement-Aktionen in deren Sektor
+4. Typische Compliance-Lücken für Unternehmen wie {company_name}"""
 
-Search regulatory bodies (BaFin, EBA, ESMA, FCA), recent news, compliance reports.
-Include specific dates, amounts, and regulation articles. Respond in English."""
+    user = f"""Recherchiere die wichtigsten regulatorischen Compliance-Herausforderungen für {company_name} (Branche: {company_industry}).
+
+Ich brauche SPEZIFISCHE, VERIFIZIERBARE Informationen über dieses Unternehmen:
+- Welche konkreten EU-Regulierungen betreffen {company_name}?
+- Welche Fristen stehen an?
+- Gab es kürzlich Bußgelder oder behördliche Maßnahmen in deren Sektor?
+- Welche Compliance-Lücken sind typisch für Unternehmen dieser Art?
+
+Suche bei Regulierungsbehörden (BaFin, EBA, ESMA, FCA), aktuellen Nachrichten, Compliance-Berichten.
+Nenne konkrete Daten, Beträge und Regulierungsartikel. Antworte auf Englisch.
+
+WICHTIG: Erfinde NICHTS. Nur verifizierbare Fakten."""
 
     result = await _call_api(
         system, user, api_key,
@@ -881,90 +889,85 @@ async def draft_email(
     sender_name: str,
     api_key: str,
 ) -> dict:
-    """Use sonar-reasoning-pro for deeply personalized emails.
-    First researches the person, then crafts the email.
+    """Use sonar-pro for clear, company-specific outreach emails.
     Returns {subject, body}."""
 
-    # Pre-research: Find personal context about the lead
-    system_research = """You are a B2B research assistant. Find professional context about a specific person.
-Search for:
-- Their recent posts, articles, or interviews
-- Conference talks or panel appearances
-- Published opinions on compliance/regulatory topics
-- Career history and expertise areas
-- Any public statements about their company's strategy
-Return a brief profile (max 200 words) with specific details useful for personalized outreach."""
+    # Trim challenges to avoid token overflow — keep essential info
+    challenges_trimmed = challenges[:2000] if challenges else "No specific challenges researched."
 
-    user_research = f"""Research {lead_name}, {lead_title} at {lead_company}.
-Find their professional background, recent public statements, expertise areas, conference appearances.
-Search LinkedIn, industry publications, conference websites.
-Return a brief profile."""
+    system = f"""Du schreibst professionelle B2B-Outreach-E-Mails für Harpocrates Corp / comply.reg.
 
-    personal_context = ""
-    try:
-        result = await _call_api(
-            system_research, user_research, api_key,
-            max_tokens=1500,
-            model=MODEL_FAST,
-            search_domain_filter=["linkedin.com", "compliance-praxis.de", "handelsblatt.com"],
-            search_language_filter=["en", "de"],
-            search_context_size="high",
-        )
-        personal_context = result if isinstance(result, str) else result.get("content", "")
-        personal_context = _strip_citations(personal_context)
-    except Exception:
-        pass
+KRITISCHE REGELN:
+1. Schreibe die E-Mail auf ENGLISCH.
+2. Der Betreff MUSS den Firmennamen "{lead_company}" enthalten und sich auf eine KONKRETE Regulierung beziehen, die für {lead_company} relevant ist (z.B. DORA, NIS2, CSRD, GDPR).
+3. Die E-Mail muss KLAR und VERSTÄNDLICH sein — ein Compliance-Manager muss sofort verstehen, worum es geht.
+4. KEINE erfundenen Referenzen: Keine erfundenen Artikel, Konferenzen, Reports, Zitate oder Events. Wenn du etwas nicht verifizieren kannst, erwähne es NICHT.
+5. KEINE Marketing-Phrasen wie "caught in the exact squeeze", "pulling real-time regulatory updates", oder ähnlichen Jargon.
+6. STRUKTUR der E-Mail:
+   - Zeile 1-2: Konkret sagen, WARUM du dich an diese Person wendest (welche Regulierung betrifft {lead_company})
+   - Zeile 3-5: Wie comply.reg KONKRET bei diesem spezifischen Problem hilft
+   - Letzte Zeile: Höfliche Frage nach einem kurzen Gespräch (15 Min)
+7. Maximal 120 Wörter. Jeder Satz muss einen klaren Zweck haben.
+8. Absender: {sender_name}, Harpocrates Corp
+9. KEINE Signatur oder Footer — wird automatisch hinzugefügt.
+10. Die E-Mail muss KOMPLETT sein — nicht abschneiden.
 
-    # Now draft the email with full context
-    system = """You write highly personalized B2B outreach emails. CRITICAL RULES:
-1. ALWAYS write in English - no German.
-2. Reference SPECIFIC, VERIFIABLE facts about the recipient and their company.
-3. Mention a specific regulation, deadline, or industry event relevant to them.
-4. If you know something personal about them (talk, article, post), reference it naturally.
-5. Show deep understanding of their role and daily challenges.
-6. Keep under 150 words, personal, value-focused. No hard sell, no generic pitch.
-7. The email must feel like it was written specifically for this ONE person.
-8. Include a soft CTA (brief call, relevant case study, industry report).
-Return ONLY valid JSON: {subject, body}"""
+ÜBER COMPLY.REG:
+comply.reg ist eine RegTech-SaaS-Plattform für automatisiertes Compliance-Monitoring:
+- Automatische Erkennung regulatorischer Änderungen (DORA, NIS2, GDPR, CSRD, EU AI Act, MiCA, AML)
+- Echtzeit-Überwachung von Compliance-Anforderungen
+- Automatische Gap-Analyse und Risikobewertung
+- Zentrale Verwaltung aller Compliance-Pflichten
 
-    user = f"""Write a cold outreach email from {sender_name} at Harpocrates Corp (RegTech company) to:
+Return ONLY valid JSON: {{"subject": "...", "body": "..."}}"""
+
+    user = f"""Schreibe eine Outreach-E-Mail von {sender_name} (Harpocrates Corp) an:
 Name: {lead_name}
-Title: {lead_title}
-Company: {lead_company}
+Position: {lead_title}
+Unternehmen: {lead_company}
 
-THEIR SPECIFIC CHALLENGES:
-{challenges}
+RECHERCHIERTE REGULATORISCHE HERAUSFORDERUNGEN FÜR {lead_company}:
+{challenges_trimmed}
 
-PERSONAL CONTEXT ABOUT {lead_name}:
-{personal_context if personal_context else "No additional personal context found."}
+ANWEISUNGEN:
+- Der Betreff MUSS "{lead_company}" enthalten
+- Beziehe dich auf 1-2 KONKRETE Regulierungen, die {lead_company} betreffen
+- Erkläre klar, wie comply.reg bei genau diesem Problem hilft
+- Maximal 120 Wörter
+- E-Mail muss KOMPLETT sein (vollständiger Text, nicht abgeschnitten)
+- KEINE erfundenen Events, Artikel oder Konferenzen
+- Schreibe auf Englisch
 
-OUR SOLUTION: comply.reg - Automated compliance monitoring, regulatory change tracking, risk assessment.
-Supports: DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, AML/KYC compliance.
-
-IMPORTANT:
-- Reference their SPECIFIC regulatory challenges with concrete details (dates, fines, articles)
-- If personal context available, weave it in naturally
-- Make subject line compelling AND specific to their situation
-- Include a soft CTA
-Return JSON: {{subject, body}}"""
+Return ONLY valid JSON: {{"subject": "...", "body": "..."}}"""
 
     content = await _call_api(
         system, user, api_key,
-        max_tokens=2000,
-        model=MODEL_REASONING,
-        search_context_size="high",
+        max_tokens=3000,
+        model=MODEL_FAST,
+        search_context_size="low",
     )
     raw = content if isinstance(content, str) else content.get("content", "")
     cleaned = _clean_json(raw)
     try:
         data = json.loads(cleaned)
-        raw_body = data.get("body", raw)
+        raw_body = data.get("body", "")
+        raw_subject = data.get("subject", "")
+        if not raw_body:
+            raw_body = raw
+        if not raw_subject:
+            raw_subject = f"Regulatory Compliance for {lead_company}"
+        # Ensure subject contains company name
+        if lead_company.lower() not in raw_subject.lower():
+            raw_subject = f"{raw_subject} — {lead_company}"
         return {
-            "subject": data.get("subject", f"Compliance Solutions for {lead_company}"),
+            "subject": _strip_citations(raw_subject),
             "body": _strip_citations(raw_body),
         }
     except json.JSONDecodeError:
-        return {"subject": "Compliance Solutions", "body": _strip_citations(raw)}
+        return {
+            "subject": f"Regulatory Compliance for {lead_company}",
+            "body": _strip_citations(raw),
+        }
 
 
 # ─── 6) Draft Follow-Up ─────────────────────────────────────────
@@ -1089,7 +1092,7 @@ Return JSON: {{"content": "...", "hashtags": [...], "sources": ["Source Name (UR
 
     industry_context = ", ".join(industries) if industries else "Financial Services, RegTech, Compliance"
 
-    user = f"""Write a {platform} post for Harpocrates Corp / comply.reg.
+    user = f"""Write a LinkedIn post for Harpocrates Corp / comply.reg.
 Topic: {topic} - {topic_prefix} {industry_context}
 
 REQUIREMENTS:
@@ -1102,7 +1105,7 @@ REQUIREMENTS:
 - Include the specific source name and date for each claim
 - Question or CTA at end
 - Mention comply.reg naturally
-- LinkedIn: 150-250 words, line breaks{dupe_context}
+- 150-250 words, line breaks{dupe_context}
 Hashtags: 5-7 from: #DORA #NIS2 #GDPR #RegTech #Compliance #FinTech #RegulatoryCompliance #comply #RiskManagement #AML #BaFin #EBA #ESMA #ECB #CSRD #EUAIAct
 Return ONLY valid JSON with content, hashtags, AND sources array."""
 
@@ -1175,19 +1178,19 @@ async def generate_subject_alternatives(
     email_body_preview: str,
     api_key: str,
 ) -> list[str]:
-    system = """You write compelling B2B cold email subject lines for RegTech/Compliance outreach.
-Generate exactly 3 different subject lines. Each must:
-- Be personalized to the company and industry
-- Reference a specific compliance challenge or regulation
-- Be concise (max 60 characters)
-- Not be generic or spammy
-- Be in English
-Return ONLY 3 lines. No numbering, no quotes."""
+    system = f"""Generiere genau 3 verschiedene E-Mail-Betreffzeilen für RegTech/Compliance-Outreach.
+Jede Betreffzeile MUSS:
+- Den Firmennamen "{company_name}" enthalten
+- Sich auf eine KONKRETE Regulierung beziehen (DORA, NIS2, CSRD, GDPR, EU AI Act, etc.)
+- Maximal 70 Zeichen lang sein
+- Auf Englisch sein
+- NICHT generisch oder spammig klingen
+Return ONLY 3 lines. No numbering, no quotes, no explanation."""
 
     user = f"""Company: {company_name}
 Industry: {company_industry}
-Email summary: {email_body_preview[:300]}
-Generate 3 compelling subject lines."""
+Email context: {email_body_preview[:300]}
+Generate 3 subject lines. Each MUST contain "{company_name}"."""
 
     content = await _call_api(
         system, user, api_key,
@@ -1197,10 +1200,15 @@ Generate 3 compelling subject lines."""
     )
     raw = content if isinstance(content, str) else content.get("content", "")
     subjects = [
-        line.strip()
+        line.strip().strip('"').strip("'").lstrip('0123456789.-) ')
         for line in raw.split("\n")
         if line.strip() and 5 < len(line.strip()) < 100
     ]
-    return subjects or [f"Compliance Partnership Opportunity - {company_name}"]
-
-
+    # Ensure company name is in each subject
+    filtered = []
+    for s in subjects:
+        if company_name.lower() in s.lower():
+            filtered.append(s)
+        else:
+            filtered.append(f"{s} — {company_name}")
+    return filtered[:3] or [f"Regulatory Compliance for {company_name}"]

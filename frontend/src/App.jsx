@@ -852,17 +852,14 @@ function App() {
         {/* ═══ LINKEDIN ════════════════════════════════ */}
         {section === 'social' && (
           <div key="social">
-            <h1 className="page-title">LinkedIn / Social</h1>
+            <h1 className="page-title">LinkedIn</h1>
             <div className="card">
               <h2>Post generieren</h2>
               <div style={{display:'flex',gap:'0.5rem',alignItems:'end',flexWrap:'wrap'}}>
                 <div className="form-group" style={{flex:1,minWidth:'150px'}}><label>Thema</label>
                   <select id="postTopic"><option value="Regulatory Update">Regulatory Update</option><option value="Compliance Tip">Compliance Tip</option><option value="Industry Insight">Industry Insight</option><option value="Product Feature">Product Feature</option><option value="Thought Leadership">Thought Leadership</option><option value="Case Study">Case Study</option></select>
                 </div>
-                <div className="form-group" style={{flex:1,minWidth:'150px'}}><label>Plattform</label>
-                  <select id="postPlatform"><option value="LinkedIn">LinkedIn</option><option value="Twitter/X">Twitter/X</option></select>
-                </div>
-                <button className="btn btn-primary" disabled={loading} onClick={() => generatePost(document.getElementById('postTopic').value, document.getElementById('postPlatform').value)}>Generieren</button>
+                <button className="btn btn-primary" disabled={loading} onClick={() => generatePost(document.getElementById('postTopic').value, 'LinkedIn')}>Generieren</button>
               </div>
             </div>
             <div className="card"><h2>Posts ({posts.length})</h2>
@@ -870,7 +867,7 @@ function App() {
                 <div key={p.id} className={`post-item ${p.is_copied ? 'post-copied' : ''}`}>
                   <div className="post-header">
                     <div style={{display:'flex',gap:'0.375rem',alignItems:'center'}}>
-                      <span className="badge badge-blue">{p.platform}</span>
+                      <span className="badge badge-blue">LinkedIn</span>
                       {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>

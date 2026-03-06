@@ -113,7 +113,6 @@ class DeliveryStatus(str, Enum):
 
 class SocialPlatform(str, Enum):
     linkedin = "LinkedIn"
-    twitter = "Twitter/X"
 
 
 class ContentTopic(str, Enum):
@@ -289,4 +288,3 @@ class SettingsUpdate(BaseModel):
     selected_industries: Optional[list[str]] = None
     selected_regions: Optional[list[str]] = None
     selected_company_sizes: Optional[list[str]] = None
-
