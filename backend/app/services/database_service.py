@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models.db import (
+    AddressBookDB,
     BlocklistDB,
     CompanyDB,
     LeadDB,
@@ -237,6 +238,76 @@ def company_db_to_response(company: CompanyDB) -> dict:
     }
 
 
+# ─── Address Book ─────────────────────────────────────────────────
+
+def save_address_book_entry(db: Session, data: dict) -> AddressBookDB:
+    entry_id = data.get("id", uuid4())
+    existing = db.get(AddressBookDB, entry_id)
+    if existing:
+        for k, v in data.items():
+            if k != "id" and hasattr(existing, k):
+                setattr(existing, k, v)
+        existing.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(existing)
+        return existing
+    else:
+        obj = AddressBookDB(
+            id=entry_id,
+            name=data.get("name", ""),
+            title=data.get("title", ""),
+            company=data.get("company", ""),
+            email=data.get("email", ""),
+            email_verified=data.get("email_verified", False),
+            linkedin_url=data.get("linkedin_url", ""),
+            phone=data.get("phone", ""),
+            notes=data.get("notes", ""),
+            source=data.get("source", "manual"),
+            created_at=data.get("created_at", datetime.utcnow()),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(obj)
+        db.commit()
+        db.refresh(obj)
+        return obj
+
+
+def load_address_book(db: Session) -> list[AddressBookDB]:
+    return db.query(AddressBookDB).order_by(AddressBookDB.name).all()
+
+
+def get_address_book_entry(db: Session, entry_id: UUID) -> Optional[AddressBookDB]:
+    return db.get(AddressBookDB, entry_id)
+
+
+def delete_address_book_entry(db: Session, entry_id: UUID):
+    obj = db.get(AddressBookDB, entry_id)
+    if obj:
+        db.delete(obj)
+        db.commit()
+
+
+def address_book_exists(db: Session, email: str) -> bool:
+    norm = email.lower().strip()
+    return db.query(AddressBookDB).filter(func.lower(AddressBookDB.email) == norm).count() > 0
+
+
+def address_book_to_response(entry: AddressBookDB) -> dict:
+    return {
+        "id": str(entry.id),
+        "name": entry.name,
+        "title": entry.title,
+        "company": entry.company,
+        "email": entry.email,
+        "email_verified": entry.email_verified,
+        "linkedin_url": entry.linkedin_url,
+        "phone": entry.phone,
+        "notes": entry.notes,
+        "source": entry.source,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+    }
+
+
 # ─── Social Posts ─────────────────────────────────────────────────
 
 def save_social_post(db: Session, data: dict) -> SocialPostDB:
@@ -347,7 +418,7 @@ def get_dashboard_stats(db: Session) -> dict:
     rate = (replied / sent * 100) if sent > 0 else 0.0
 
     by_status: dict[str, int] = {}
-    by_industry: dict[str, int] = {}  # approximate via company lookup
+    by_industry: dict[str, int] = {}
     for l in leads:
         by_status[l.status] = by_status.get(l.status, 0) + 1
 
@@ -357,6 +428,9 @@ def get_dashboard_stats(db: Session) -> dict:
         ind = company_industry.get(l.company.lower(), "Unknown")
         by_industry[ind] = by_industry.get(ind, 0) + 1
 
+    # Address book count
+    ab_count = db.query(AddressBookDB).count()
+
     return {
         "total_leads": total,
         "emails_sent": sent,
@@ -364,4 +438,5 @@ def get_dashboard_stats(db: Session) -> dict:
         "conversion_rate": round(rate, 1),
         "leads_by_status": by_status,
         "leads_by_industry": by_industry,
+        "address_book_count": ab_count,
     }

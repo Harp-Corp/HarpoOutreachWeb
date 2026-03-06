@@ -86,6 +86,30 @@ class LeadDB(Base):
     )
 
 
+# ─── Address Book (persistent verified contacts) ─────────────────
+
+class AddressBookDB(Base):
+    __tablename__ = "address_book"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name = Column(String, nullable=False, default="")
+    title = Column(String, nullable=False, default="")
+    company = Column(String, nullable=False, default="")
+    email = Column(String, nullable=False, default="")
+    email_verified = Column(Boolean, nullable=False, default=False)
+    linkedin_url = Column(String, nullable=False, default="")
+    phone = Column(String, nullable=False, default="")
+    notes = Column(Text, nullable=False, default="")
+    source = Column(String, nullable=False, default="")  # "verified" or "manual"
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_addressbook_email", "email"),
+        Index("idx_addressbook_company", "company"),
+    )
+
+
 # ─── Social Posts ─────────────────────────────────────────────────
 
 class SocialPostDB(Base):

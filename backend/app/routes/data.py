@@ -195,6 +195,83 @@ async def remove_social_post(post_id: UUID, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+# ─── Address Book ─────────────────────────────────────────────────
+
+@router.get("/address-book")
+async def list_address_book(db: Session = Depends(get_db)):
+    entries = db_svc.load_address_book(db)
+    return {"data": [db_svc.address_book_to_response(e) for e in entries]}
+
+
+@router.post("/address-book")
+async def create_address_book_entry(data: dict, db: Session = Depends(get_db)):
+    """Manually add a contact to the address book."""
+    data["id"] = uuid4()
+    data["source"] = "manual"
+    data["email_verified"] = False  # manual entries don't need verification
+    obj = db_svc.save_address_book_entry(db, data)
+    return {"success": True, "data": db_svc.address_book_to_response(obj)}
+
+
+@router.post("/address-book/from-lead/{lead_id}")
+async def add_lead_to_address_book(lead_id: UUID, db: Session = Depends(get_db)):
+    """Copy a verified lead into the address book."""
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+    if not lead.email_verified:
+        raise HTTPException(400, "Nur verifizierte Kontakte können ins Adressbuch übernommen werden.")
+    if db_svc.address_book_exists(db, lead.email):
+        raise HTTPException(400, f"{lead.email} ist bereits im Adressbuch.")
+    entry = db_svc.save_address_book_entry(db, {
+        "id": uuid4(),
+        "name": lead.name,
+        "title": lead.title,
+        "company": lead.company,
+        "email": lead.email,
+        "email_verified": True,
+        "linkedin_url": lead.linkedin_url,
+        "phone": lead.phone or "",
+        "notes": lead.verification_notes or "",
+        "source": "verified",
+    })
+    return {"success": True, "data": db_svc.address_book_to_response(entry)}
+
+
+@router.put("/address-book/{entry_id}")
+async def update_address_book_entry(entry_id: UUID, data: dict, db: Session = Depends(get_db)):
+    data["id"] = entry_id
+    obj = db_svc.save_address_book_entry(db, data)
+    return {"success": True, "data": db_svc.address_book_to_response(obj)}
+
+
+@router.delete("/address-book/{entry_id}")
+async def remove_address_book_entry(entry_id: UUID, db: Session = Depends(get_db)):
+    db_svc.delete_address_book_entry(db, entry_id)
+    return {"success": True}
+
+
+@router.get("/address-book/export")
+async def export_address_book_csv(db: Session = Depends(get_db)):
+    """Export address book as CSV."""
+    entries = db_svc.load_address_book(db)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Name", "Titel", "Unternehmen", "E-Mail", "Verifiziert", "LinkedIn", "Telefon", "Quelle", "Notizen"])
+    for e in entries:
+        writer.writerow([
+            e.name, e.title, e.company, e.email,
+            "Ja" if e.email_verified else "Nein",
+            e.linkedin_url, e.phone, e.source, e.notes,
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=adressbuch_{datetime.utcnow().strftime('%Y%m%d')}.csv"},
+    )
+
+
 # ─── Blocklist ────────────────────────────────────────────────────
 
 @router.get("/blocklist")
