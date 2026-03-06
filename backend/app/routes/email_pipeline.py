@@ -413,7 +413,7 @@ async def delete_draft(lead_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/reset/{lead_id}")
 async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
-    """Full reset: clears draft, send date, thread ID, delivery status."""
+    """Full reset: clears draft, send date, thread ID, delivery status, blocklist entry."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -422,10 +422,15 @@ async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
     lead.delivery_status = "Pending"
     lead.gmail_thread_id = None
     lead.reply_received = ""
+    lead.opted_out = False
+    lead.opt_out_date = None
     lead.status = "Identified"
     lead.updated_at = datetime.utcnow()
+    # Also remove from blocklist if present
+    if lead.email:
+        db_svc.remove_from_blocklist(db, lead.email)
     db.commit()
-    _logger.info(f"Lead {lead_id} ({lead.name}) full campaign reset")
+    _logger.info(f"Lead {lead_id} ({lead.name}) full campaign reset (incl. blocklist)")
     return {"success": True}
 
 
@@ -441,6 +446,8 @@ async def resend_lead(lead_id: UUID, db: Session = Depends(get_db)):
     lead.delivery_status = "Pending"
     lead.gmail_thread_id = None
     lead.reply_received = ""
+    lead.opted_out = False
+    lead.opt_out_date = None
     # Keep draft and approval, set status to Email Approved if was approved
     draft = json.loads(lead.drafted_email_json)
     if draft.get("is_approved"):
@@ -448,8 +455,11 @@ async def resend_lead(lead_id: UUID, db: Session = Depends(get_db)):
     else:
         lead.status = "Email Drafted"
     lead.updated_at = datetime.utcnow()
+    # Also remove from blocklist if present
+    if lead.email:
+        db_svc.remove_from_blocklist(db, lead.email)
     db.commit()
-    _logger.info(f"Lead {lead_id} ({lead.name}) reset for resend (draft kept)")
+    _logger.info(f"Lead {lead_id} ({lead.name}) reset for resend (draft kept, blocklist cleared)")
     return {"success": True}
 
 
@@ -469,11 +479,17 @@ async def reset_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
         lead.date_email_sent = None
         lead.delivery_status = "Pending"
         lead.gmail_thread_id = None
+        lead.reply_received = ""
+        lead.opted_out = False
+        lead.opt_out_date = None
         lead.status = "Identified"
         lead.updated_at = datetime.utcnow()
+        # Also remove from blocklist if present
+        if lead.email:
+            db_svc.remove_from_blocklist(db, lead.email)
         reset_count += 1
     db.commit()
-    _logger.info(f"Batch reset: {reset_count} leads")
+    _logger.info(f"Batch reset: {reset_count} leads (incl. blocklist)")
     return {"success": True, "reset": reset_count}
 
 
