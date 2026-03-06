@@ -7,7 +7,8 @@ import random
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..models.db import CompanyDB, get_db
@@ -28,6 +29,18 @@ def _get_access_token(db: Session) -> str:
     # TODO: check expiry and refresh automatically
     return token
 
+
+# ─── Pydantic models for request bodies ────────────────────────
+
+class UpdateDraftBody(BaseModel):
+    subject: str
+    body: str
+
+class BatchLeadIds(BaseModel):
+    lead_ids: list[str]
+
+
+# ─── Single Draft ──────────────────────────────────────────────
 
 @router.post("/draft/{lead_id}")
 async def draft_email(lead_id: UUID, db: Session = Depends(get_db)):
@@ -84,6 +97,8 @@ async def draft_email(lead_id: UUID, db: Session = Depends(get_db)):
     return {"success": True, "data": draft.model_dump()}
 
 
+# ─── Draft All (existing leads without draft) ─────────────────
+
 @router.post("/draft-all")
 async def draft_all_emails(db: Session = Depends(get_db)):
     """Draft emails for all leads that have an email but no draft."""
@@ -125,6 +140,74 @@ async def draft_all_emails(db: Session = Depends(get_db)):
     return {"success": True, "created": created, "failed": failed}
 
 
+# ─── Batch Draft (for specific lead IDs – campaign wizard) ────
+
+@router.post("/draft-batch")
+async def draft_batch_emails(data: BatchLeadIds, db: Session = Depends(get_db)):
+    """Draft emails for specific leads by ID (campaign wizard step 2)."""
+    api_key = db_svc.get_setting(db, "perplexity_api_key")
+    if not api_key:
+        raise HTTPException(400, "Perplexity API Key fehlt.")
+
+    created = 0
+    failed = 0
+    skipped = 0
+
+    for lid_str in data.lead_ids:
+        try:
+            lid = UUID(lid_str)
+        except ValueError:
+            failed += 1
+            continue
+        lead = db_svc.get_lead(db, lid)
+        if not lead:
+            failed += 1
+            continue
+        if lead.drafted_email_json:
+            skipped += 1
+            continue
+        if not lead.email and not lead.is_manually_created:
+            failed += 1
+            continue
+
+        try:
+            company = db.query(CompanyDB).filter(CompanyDB.name.ilike(lead.company)).first()
+            company_name = company.name if company else lead.company
+            company_industry = company.industry if company else ""
+
+            challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+            sender_name = db_svc.get_setting(db, "sender_name", "Martin Foerster")
+            email_data = await pplx.draft_email(
+                lead.name, lead.title, lead.company, challenges, sender_name, api_key
+            )
+
+            try:
+                subjects = await pplx.generate_subject_alternatives(
+                    company_name, company_industry, email_data["body"][:200], api_key
+                )
+                if subjects:
+                    email_data["subject"] = subjects[0]
+            except Exception:
+                pass
+
+            draft = OutboundEmail(
+                id=uuid4(),
+                subject=email_data["subject"],
+                body=email_data["body"],
+            )
+            lead.drafted_email_json = draft.model_dump_json()
+            lead.status = "Email Drafted"
+            lead.updated_at = datetime.utcnow()
+            db.commit()
+            created += 1
+        except Exception:
+            failed += 1
+
+    return {"success": True, "created": created, "failed": failed, "skipped": skipped}
+
+
+# ─── Single Approve ───────────────────────────────────────────
+
 @router.post("/approve/{lead_id}")
 async def approve_email(lead_id: UUID, db: Session = Depends(get_db)):
     lead = db_svc.get_lead(db, lead_id)
@@ -143,6 +226,27 @@ async def approve_email(lead_id: UUID, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+@router.post("/unapprove/{lead_id}")
+async def unapprove_email(lead_id: UUID, db: Session = Depends(get_db)):
+    """Revoke approval for an email draft."""
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+    if not lead.drafted_email_json:
+        raise HTTPException(400, "Kein E-Mail-Entwurf vorhanden.")
+
+    draft = json.loads(lead.drafted_email_json)
+    draft["is_approved"] = False
+    lead.drafted_email_json = json.dumps(draft)
+    lead.status = "Email Drafted"
+    lead.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {"success": True}
+
+
+# ─── Approve / Unapprove All ─────────────────────────────────
+
 @router.post("/approve-all")
 async def approve_all(db: Session = Depends(get_db)):
     leads = db_svc.load_leads(db)
@@ -160,24 +264,52 @@ async def approve_all(db: Session = Depends(get_db)):
     return {"success": True, "approved": count}
 
 
+# ─── Batch Approve (specific IDs) ────────────────────────────
+
+@router.post("/approve-batch")
+async def approve_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
+    """Approve emails for specific leads (campaign wizard step 3)."""
+    approved = 0
+    for lid_str in data.lead_ids:
+        try:
+            lid = UUID(lid_str)
+        except ValueError:
+            continue
+        lead = db_svc.get_lead(db, lid)
+        if not lead or not lead.drafted_email_json:
+            continue
+        draft = json.loads(lead.drafted_email_json)
+        if not draft.get("is_approved"):
+            draft["is_approved"] = True
+            lead.drafted_email_json = json.dumps(draft)
+            lead.status = "Email Approved"
+            lead.updated_at = datetime.utcnow()
+            approved += 1
+    db.commit()
+    return {"success": True, "approved": approved}
+
+
+# ─── Update Draft ─────────────────────────────────────────────
+
 @router.put("/update-draft/{lead_id}")
 async def update_draft(
     lead_id: UUID,
-    subject: str,
-    body: str,
+    data: UpdateDraftBody,
     db: Session = Depends(get_db),
 ):
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
 
+    # Update draft text but keep is_approved = False (user must re-approve after editing)
     draft = OutboundEmail(
         id=uuid4(),
-        subject=subject,
-        body=body,
-        is_approved=True,
+        subject=data.subject,
+        body=data.body,
+        is_approved=False,
     )
     lead.drafted_email_json = draft.model_dump_json()
+    lead.status = "Email Drafted"
     lead.updated_at = datetime.utcnow()
     db.commit()
     return {"success": True}
@@ -194,6 +326,8 @@ async def delete_draft(lead_id: UUID, db: Session = Depends(get_db)):
     db.commit()
     return {"success": True}
 
+
+# ─── Single Send ──────────────────────────────────────────────
 
 @router.post("/send/{lead_id}")
 async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
@@ -244,6 +378,8 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
         db.commit()
         raise HTTPException(500, f"Senden fehlgeschlagen: {str(e)}")
 
+
+# ─── Send All Approved ────────────────────────────────────────
 
 @router.post("/send-all")
 async def send_all_approved(db: Session = Depends(get_db)):
@@ -319,6 +455,78 @@ async def send_all_approved(db: Session = Depends(get_db)):
         "remaining": remaining,
     }
 
+
+# ─── Batch Send (specific IDs – campaign wizard step 4) ──────
+
+@router.post("/send-batch")
+async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
+    """Send approved emails for specific leads (campaign wizard step 4).
+    Respects rate limits: 30-90s random delay between sends."""
+    access_token = _get_access_token(db)
+    sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
+
+    sent = 0
+    failed = 0
+    skipped = 0
+
+    for i, lid_str in enumerate(data.lead_ids):
+        try:
+            lid = UUID(lid_str)
+        except ValueError:
+            failed += 1
+            continue
+
+        lead = db_svc.get_lead(db, lid)
+        if not lead or not lead.drafted_email_json:
+            failed += 1
+            continue
+
+        draft = json.loads(lead.drafted_email_json)
+        if not draft.get("is_approved"):
+            skipped += 1
+            continue
+
+        if db_svc.is_blocked(db, lead.email):
+            lead.status = "Do Not Contact"
+            lead.opted_out = True
+            db.commit()
+            skipped += 1
+            continue
+
+        if lead.date_email_sent:
+            skipped += 1
+            continue
+
+        try:
+            await gmail.send_email(
+                to=lead.email,
+                from_addr=sender,
+                subject=draft["subject"],
+                body=draft["body"],
+                access_token=access_token,
+            )
+            lead.status = "Email Sent"
+            lead.date_email_sent = datetime.utcnow()
+            draft["sent_date"] = datetime.utcnow().isoformat()
+            lead.drafted_email_json = json.dumps(draft)
+            lead.delivery_status = "Delivered"
+            lead.updated_at = datetime.utcnow()
+            db.commit()
+            sent += 1
+
+            # Rate limit: random 30-90s delay between sends
+            if i < len(data.lead_ids) - 1:
+                await asyncio.sleep(random.uniform(30, 90))
+        except Exception as e:
+            lead.delivery_status = "Failed"
+            lead.updated_at = datetime.utcnow()
+            db.commit()
+            failed += 1
+
+    return {"success": True, "sent": sent, "failed": failed, "skipped": skipped}
+
+
+# ─── Follow-Up Draft ─────────────────────────────────────────
 
 @router.post("/draft-follow-up/{lead_id}")
 async def draft_follow_up(lead_id: UUID, db: Session = Depends(get_db)):

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 const API = '/api'
 
@@ -11,12 +11,21 @@ function App() {
   const [addressBook, setAddressBook] = useState([])
   const [authStatus, setAuthStatus] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [loadingMsg, setLoadingMsg] = useState('')
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
-  // Campaign source toggle
-  const [campaignSource, setCampaignSource] = useState('search') // 'search' | 'addressbook'
-  const [abFilter, setAbFilter] = useState('all') // 'all' | 'active' | 'blocked'
+  const [abFilter, setAbFilter] = useState('all')
+
+  // Campaign wizard state
+  const [campStep, setCampStep] = useState(1) // 1=select, 2=draft+edit, 3=approve, 4=send
+  const [campSelected, setCampSelected] = useState(new Set()) // selected address book entry IDs
+  const [campLeads, setCampLeads] = useState([]) // leads created for this campaign
+  const [campActiveLeadId, setCampActiveLeadId] = useState(null) // selected lead for email preview
+  const [campDraftSubject, setCampDraftSubject] = useState('')
+  const [campDraftBody, setCampDraftBody] = useState('')
+  const [campSendSelected, setCampSendSelected] = useState(new Set()) // step 4: which to send
+  const [campDrafting, setCampDrafting] = useState(false) // drafting in progress
 
   const [selIndustries, setSelIndustries] = useState([])
   const [selRegions, setSelRegions] = useState([])
@@ -50,6 +59,9 @@ function App() {
   }
   const showSuccess = (msg) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(''), 4000) }
 
+  const startLoading = (msg) => { setLoading(true); setLoadingMsg(msg || 'Wird verarbeitet...') }
+  const stopLoading = () => { setLoading(false); setLoadingMsg('') }
+
   const loadDashboard = useCallback(async () => { try { const r = await fetchJson(`${API}/data/dashboard`); setStats(r.data) } catch {} }, [])
   const loadCompanies = useCallback(async () => { try { const r = await fetchJson(`${API}/data/companies`); setCompanies(r.data || []) } catch {} }, [])
   const loadLeads = useCallback(async () => { try { const r = await fetchJson(`${API}/data/leads`); setLeads(r.data || []) } catch {} }, [])
@@ -62,17 +74,26 @@ function App() {
     setError(''); setSuccessMsg('')
     if (section === 'search') { loadCompanies(); loadLeads() }
     else if (section === 'addressbook') { loadAddressBook() }
-    else if (section === 'campaign') { loadCompanies(); loadLeads(); loadAddressBook() }
+    else if (section === 'campaign') { loadAddressBook(); loadLeads() }
     else if (section === 'social') { loadPosts() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
+
+  // Reset campaign wizard when entering campaign section
+  useEffect(() => {
+    if (section === 'campaign') {
+      setCampStep(1); setCampSelected(new Set()); setCampLeads([])
+      setCampActiveLeadId(null); setCampDraftSubject(''); setCampDraftBody('')
+      setCampSendSelected(new Set()); setCampDrafting(false)
+    }
+  }, [section])
 
   const toggle = (arr, setArr, val) => setArr(prev => prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val])
 
   // ─── Actions ────────────────────────────────────────────
   const findCompanies = async () => {
     if (!selIndustries.length || !selRegions.length) { setError('Bitte mindestens eine Branche und eine Region auswählen.'); return }
-    setLoading(true); setError('')
+    startLoading('Unternehmen werden gesucht...'); setError('')
     try {
       await fetchJson(`${API}/data/companies`, { method: 'DELETE' })
       await fetchJson(`${API}/data/leads`, { method: 'DELETE' })
@@ -85,36 +106,36 @@ function App() {
       showSuccess(`${r.total || 0} Unternehmen gefunden`)
       await loadCompanies()
     } catch (e) { setError(e.message) }
-    setLoading(false)
+    stopLoading()
   }
 
   const findContacts = async (companyId) => {
-    setLoading(true); setError('')
+    startLoading('Kontakte werden gesucht...'); setError('')
     try { const r = await fetchJson(`${API}/prospecting/find-contacts/${companyId}`, { method: 'POST' }); showSuccess(`${r.total || 0} Kontakte`); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
+    catch (e) { setError(e.message) } stopLoading()
   }
   const findAllContacts = async () => {
-    setLoading(true); setError('')
+    startLoading('Alle Kontakte werden gesucht...'); setError('')
     try { const r = await fetchJson(`${API}/prospecting/find-contacts-all`, { method: 'POST' }); showSuccess(`${r.total_new || 0} neue Kontakte`); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
+    catch (e) { setError(e.message) } stopLoading()
   }
   const verifyEmail = async (leadId) => {
-    setLoading(true); setError('')
+    startLoading('E-Mail wird verifiziert...'); setError('')
     try { const r = await fetchJson(`${API}/prospecting/verify-email/${leadId}`, { method: 'POST' }); showSuccess(`Verifiziert: ${r.data?.email || 'OK'}`); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
+    catch (e) { setError(e.message) } stopLoading()
   }
   const verifyAllEmails = async () => {
-    setLoading(true); setError('')
+    startLoading('E-Mails werden verifiziert...'); setError('')
     try { const r = await fetchJson(`${API}/prospecting/verify-all`, { method: 'POST' }); showSuccess(`${r.verified || 0}/${r.total || 0} verifiziert`); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
+    catch (e) { setError(e.message) } stopLoading()
   }
   const addToAddressBook = async (leadId) => {
-    setLoading(true); setError('')
+    startLoading('Wird ins Adressbuch übernommen...'); setError('')
     try { await fetchJson(`${API}/data/address-book/from-lead/${leadId}`, { method: 'POST' }); showSuccess('Ins Adressbuch übernommen'); await loadAddressBook() }
-    catch (e) { setError(e.message) } setLoading(false)
+    catch (e) { setError(e.message) } stopLoading()
   }
   const addAllVerifiedToAddressBook = async () => {
-    setLoading(true); setError('')
+    startLoading('Verifizierte Kontakte werden ins Adressbuch übernommen...'); setError('')
     const verified = leads.filter(l => l.email_verified)
     let added = 0
     for (const l of verified) {
@@ -122,87 +143,41 @@ function App() {
     }
     showSuccess(`${added} Kontakte ins Adressbuch übernommen`)
     await loadAddressBook()
-    setLoading(false)
+    stopLoading()
   }
   const removeFromAddressBook = async (entryId) => {
     try { await fetchJson(`${API}/data/address-book/${entryId}`, { method: 'DELETE' }); await loadAddressBook() }
     catch (e) { setError(e.message) }
   }
   const setContactStatus = async (entryId, newStatus) => {
-    setLoading(true); setError('')
+    startLoading(newStatus === 'blocked' ? 'Kontakt wird gesperrt...' : 'Kontakt wird freigeschaltet...'); setError('')
     try {
       await fetchJson(`${API}/data/address-book/${entryId}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contact_status: newStatus }) })
       showSuccess(newStatus === 'blocked' ? 'Kontakt gesperrt' : 'Kontakt freigeschaltet')
       await loadAddressBook()
     } catch (e) { setError(e.message) }
-    setLoading(false)
+    stopLoading()
   }
   const permanentlyDeleteContact = async (entryId) => {
     if (!confirm('Kontakt endgültig löschen?')) return
-    setLoading(true); setError('')
+    startLoading('Kontakt wird gelöscht...'); setError('')
     try { await fetchJson(`${API}/data/address-book/${entryId}/permanent`, { method: 'DELETE' }); showSuccess('Kontakt gelöscht'); await loadAddressBook() }
     catch (e) { setError(e.message) }
-    setLoading(false)
+    stopLoading()
   }
   const addManualContact = async (formData) => {
-    setLoading(true); setError('')
+    startLoading('Kontakt wird hinzugefügt...'); setError('')
     try {
       await fetchJson(`${API}/data/address-book`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       showSuccess('Kontakt hinzugefügt'); setShowAddForm(false); await loadAddressBook()
     } catch (e) { setError(e.message) }
-    setLoading(false)
-  }
-
-  const draftEmail = async (leadId) => {
-    setLoading(true); setError('')
-    try { await fetchJson(`${API}/email/draft/${leadId}`, { method: 'POST' }); showSuccess('Entwurf erstellt'); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
-  }
-  const draftAllEmails = async () => {
-    setLoading(true); setError('')
-    try { const r = await fetchJson(`${API}/email/draft-all`, { method: 'POST' }); showSuccess(`${r.created || 0} Entwürfe`); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
-  }
-  const approveEmail = async (leadId) => {
-    try { await fetchJson(`${API}/email/approve/${leadId}`, { method: 'POST' }); await loadLeads() } catch (e) { setError(e.message) }
-  }
-  const approveAllEmails = async () => {
-    try { const r = await fetchJson(`${API}/email/approve-all`, { method: 'POST' }); showSuccess(`${r.approved || 0} genehmigt`); await loadLeads() } catch (e) { setError(e.message) }
-  }
-  const sendEmail = async (leadId) => {
-    setLoading(true); setError('')
-    try { await fetchJson(`${API}/email/send/${leadId}`, { method: 'POST' }); showSuccess('Gesendet'); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
-  }
-  const sendAllEmails = async () => {
-    setLoading(true); setError('')
-    try { const r = await fetchJson(`${API}/email/send-all`, { method: 'POST' }); showSuccess(`${r.sent || 0} gesendet`); await loadLeads() }
-    catch (e) { setError(e.message) } setLoading(false)
-  }
-
-  // Campaign: create leads from address book contacts
-  const importAddressBookToCampaign = async () => {
-    setLoading(true); setError('')
-    let created = 0
-    const activeContacts = addressBook.filter(c => (c.contact_status || 'active') === 'active')
-    for (const contact of activeContacts) {
-      try {
-        await fetchJson(`${API}/data/leads`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: contact.name, title: contact.title, company: contact.company, email: contact.email, email_verified: contact.email_verified, linkedin_url: contact.linkedin_url, source: 'Adressbuch', status: 'Identified' })
-        })
-        created++
-      } catch {}
-    }
-    showSuccess(`${created} Kontakte aus Adressbuch importiert`)
-    await loadLeads()
-    setLoading(false)
+    stopLoading()
   }
 
   const generatePost = async (topic, platform) => {
-    setLoading(true); setError('')
+    startLoading('Post wird generiert...'); setError('')
     try { await fetchJson(`${API}/data/social-posts/generate?topic=${encodeURIComponent(topic)}&platform=${encodeURIComponent(platform)}`, { method: 'POST' }); showSuccess('Post generiert'); await loadPosts() }
-    catch (e) { setError(e.message) } setLoading(false)
+    catch (e) { setError(e.message) } stopLoading()
   }
   const deletePost = async (postId) => {
     try { await fetchJson(`${API}/data/social-posts/${postId}`, { method: 'DELETE' }); await loadPosts() } catch (e) { setError(e.message) }
@@ -216,14 +191,11 @@ function App() {
 
   const renderPostContent = (text) => {
     if (!text) return ''
-    // Escape HTML first
     const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    // Convert URLs to clickable links
     const withLinks = escaped.replace(
       /(https?:\/\/[^\s)<>]+)/g,
       '<a href="$1" target="_blank" rel="noopener noreferrer" class="post-link">$1</a>'
     )
-    // Convert line breaks to <br>
     return withLinks.replace(/\n/g, '<br/>')
   }
 
@@ -248,6 +220,222 @@ function App() {
     </div>
   )
 
+  // ─── Campaign Wizard Functions ───────────────────────────
+  const activeContacts = addressBook.filter(a => (a.contact_status || 'active') === 'active' && a.email)
+
+  const toggleCampSelect = (id) => {
+    setCampSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  const toggleCampSelectAll = () => {
+    if (campSelected.size === activeContacts.length) {
+      setCampSelected(new Set())
+    } else {
+      setCampSelected(new Set(activeContacts.map(a => a.id)))
+    }
+  }
+
+  // Step 1 → Step 2: import selected contacts as leads, then batch-draft
+  const campGoToStep2 = async () => {
+    if (campSelected.size === 0) { setError('Bitte mindestens einen Kontakt auswählen.'); return }
+    startLoading('Kontakte werden importiert...'); setError('')
+
+    // Import selected address book contacts as leads
+    const selectedContacts = activeContacts.filter(a => campSelected.has(a.id))
+    const newLeadIds = []
+
+    for (const contact of selectedContacts) {
+      try {
+        const r = await fetchJson(`${API}/data/leads`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: contact.name, title: contact.title, company: contact.company, email: contact.email, email_verified: contact.email_verified, linkedin_url: contact.linkedin_url, source: 'Kampagne', status: 'Identified' })
+        })
+        if (r.data?.id) newLeadIds.push(r.data.id)
+      } catch {}
+    }
+
+    if (newLeadIds.length === 0) {
+      setError('Keine Kontakte konnten importiert werden.')
+      stopLoading()
+      return
+    }
+
+    // Now batch-draft emails for all new leads
+    setLoadingMsg(`${newLeadIds.length} E-Mail-Entwürfe werden erstellt (personalisiert per KI)...`)
+    setCampDrafting(true)
+
+    try {
+      const r = await fetchJson(`${API}/email/draft-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: newLeadIds })
+      })
+      showSuccess(`${r.created || 0} Entwürfe erstellt${r.failed ? `, ${r.failed} fehlgeschlagen` : ''}`)
+    } catch (e) {
+      setError(`Fehler beim Erstellen der Entwürfe: ${e.message}`)
+    }
+
+    setCampDrafting(false)
+
+    // Reload leads and filter for our campaign leads
+    const leadsResp = await fetchJson(`${API}/data/leads`)
+    const allLeads = leadsResp.data || []
+    const campaignLeads = allLeads.filter(l => newLeadIds.includes(l.id))
+    setCampLeads(campaignLeads)
+
+    if (campaignLeads.length > 0) {
+      setCampActiveLeadId(campaignLeads[0].id)
+      const draft = campaignLeads[0].drafted_email
+      setCampDraftSubject(draft?.subject || '')
+      setCampDraftBody(draft?.body || '')
+    }
+
+    stopLoading()
+    setCampStep(2)
+  }
+
+  // Select a lead in step 2 left panel
+  const campSelectLead = (lead) => {
+    setCampActiveLeadId(lead.id)
+    const draft = lead.drafted_email
+    setCampDraftSubject(draft?.subject || '')
+    setCampDraftBody(draft?.body || '')
+  }
+
+  // Save edits for current lead's draft
+  const campSaveDraft = async () => {
+    if (!campActiveLeadId) return
+    startLoading('Entwurf wird gespeichert...'); setError('')
+    try {
+      await fetchJson(`${API}/email/update-draft/${campActiveLeadId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: campDraftSubject, body: campDraftBody })
+      })
+      showSuccess('Entwurf gespeichert')
+      // Reload campaign leads
+      const leadsResp = await fetchJson(`${API}/data/leads`)
+      const allLeads = leadsResp.data || []
+      const updatedCampLeads = allLeads.filter(l => campLeads.some(cl => cl.id === l.id))
+      setCampLeads(updatedCampLeads)
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  // Regenerate draft for a single lead
+  const campRegenerateDraft = async (leadId) => {
+    startLoading('Entwurf wird neu generiert...'); setError('')
+    try {
+      // Delete old draft first
+      await fetchJson(`${API}/email/draft/${leadId}`, { method: 'DELETE' }).catch(() => {})
+      await fetchJson(`${API}/email/draft/${leadId}`, { method: 'POST' })
+      showSuccess('Neuer Entwurf erstellt')
+      // Reload
+      const leadsResp = await fetchJson(`${API}/data/leads`)
+      const allLeads = leadsResp.data || []
+      const updatedCampLeads = allLeads.filter(l => campLeads.some(cl => cl.id === l.id))
+      setCampLeads(updatedCampLeads)
+      const updated = updatedCampLeads.find(l => l.id === leadId)
+      if (updated) {
+        setCampDraftSubject(updated.drafted_email?.subject || '')
+        setCampDraftBody(updated.drafted_email?.body || '')
+      }
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  // Step 2 → Step 3: go to approval
+  const campGoToStep3 = () => {
+    const withDrafts = campLeads.filter(l => l.drafted_email)
+    if (withDrafts.length === 0) { setError('Noch keine Entwürfe vorhanden.'); return }
+    setCampStep(3)
+  }
+
+  // Approve/unapprove single lead
+  const campApprove = async (leadId) => {
+    try {
+      await fetchJson(`${API}/email/approve/${leadId}`, { method: 'POST' })
+      const leadsResp = await fetchJson(`${API}/data/leads`)
+      const allLeads = leadsResp.data || []
+      setCampLeads(allLeads.filter(l => campLeads.some(cl => cl.id === l.id)))
+    } catch (e) { setError(e.message) }
+  }
+  const campUnapprove = async (leadId) => {
+    try {
+      await fetchJson(`${API}/email/unapprove/${leadId}`, { method: 'POST' })
+      const leadsResp = await fetchJson(`${API}/data/leads`)
+      const allLeads = leadsResp.data || []
+      setCampLeads(allLeads.filter(l => campLeads.some(cl => cl.id === l.id)))
+    } catch (e) { setError(e.message) }
+  }
+
+  // Approve all
+  const campApproveAll = async () => {
+    const ids = campLeads.filter(l => l.drafted_email && !l.drafted_email.is_approved).map(l => l.id)
+    if (ids.length === 0) return
+    startLoading('Alle Entwürfe werden freigegeben...'); setError('')
+    try {
+      await fetchJson(`${API}/email/approve-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: ids })
+      })
+      const leadsResp = await fetchJson(`${API}/data/leads`)
+      const allLeads = leadsResp.data || []
+      setCampLeads(allLeads.filter(l => campLeads.some(cl => cl.id === l.id)))
+      showSuccess('Alle Entwürfe freigegeben')
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  // Step 3 → Step 4: prepare send list
+  const campGoToStep4 = () => {
+    const approved = campLeads.filter(l => l.drafted_email?.is_approved && !l.date_email_sent)
+    if (approved.length === 0) { setError('Keine freigegebenen E-Mails zum Versenden.'); return }
+    setCampSendSelected(new Set(approved.map(l => l.id)))
+    setCampStep(4)
+  }
+
+  // Toggle send selection
+  const toggleSendSelect = (id) => {
+    setCampSendSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  const toggleSendSelectAll = () => {
+    const approved = campLeads.filter(l => l.drafted_email?.is_approved && !l.date_email_sent)
+    if (campSendSelected.size === approved.length) {
+      setCampSendSelected(new Set())
+    } else {
+      setCampSendSelected(new Set(approved.map(l => l.id)))
+    }
+  }
+
+  // Send selected emails
+  const campSendEmails = async () => {
+    if (campSendSelected.size === 0) { setError('Keine E-Mails ausgewählt.'); return }
+    if (!authStatus?.authenticated) { setError('Bitte zuerst mit Google verbinden.'); return }
+
+    const count = campSendSelected.size
+    if (!confirm(`${count} E-Mail${count > 1 ? 's' : ''} jetzt senden?\n\nHinweis: Zwischen den E-Mails wird 30–90 Sekunden gewartet (Google API Rate Limit).`)) return
+
+    startLoading(`${count} E-Mails werden gesendet (30–90s Pause zwischen Sendungen)...`); setError('')
+    try {
+      const r = await fetchJson(`${API}/email/send-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: Array.from(campSendSelected) })
+      })
+      showSuccess(`${r.sent || 0} gesendet${r.failed ? `, ${r.failed} fehlgeschlagen` : ''}${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      // Reload
+      const leadsResp = await fetchJson(`${API}/data/leads`)
+      const allLeads = leadsResp.data || []
+      setCampLeads(allLeads.filter(l => campLeads.some(cl => cl.id === l.id)))
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
   const menuItems = [
     { id: 'search', icon: '🔍', label: 'Suche' },
     { id: 'addressbook', icon: '📖', label: 'Adressbuch' },
@@ -255,6 +443,27 @@ function App() {
     { id: 'social', icon: '💬', label: 'LinkedIn' },
     { id: 'settings', icon: '⚙️', label: 'Einstellungen' },
   ]
+
+  // Step indicator for campaign wizard
+  const WizardSteps = () => {
+    const steps = [
+      { num: 1, label: 'Kontakte' },
+      { num: 2, label: 'Entwürfe' },
+      { num: 3, label: 'Freigabe' },
+      { num: 4, label: 'Versand' },
+    ]
+    return (
+      <div className="wizard-steps">
+        {steps.map((s, i) => (
+          <div key={s.num} className={`wizard-step ${campStep === s.num ? 'active' : ''} ${campStep > s.num ? 'done' : ''}`}>
+            <div className="wizard-num">{campStep > s.num ? '✓' : s.num}</div>
+            <span className="wizard-label">{s.label}</span>
+            {i < steps.length - 1 && <div className="wizard-line" />}
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="layout">
@@ -279,7 +488,7 @@ function App() {
       <main className="main">
         {error && <div className="msg msg-error">{error} <button onClick={() => setError('')}>×</button></div>}
         {successMsg && <div className="msg msg-success">{successMsg}</div>}
-        {loading && <div className="msg msg-loading">Wird verarbeitet...</div>}
+        {loading && <div className="msg msg-loading"><span className="spinner" />{loadingMsg || 'Wird verarbeitet...'}</div>}
 
         {/* ═══ SUCHE ═══════════════════════════════════ */}
         {section === 'search' && (
@@ -331,7 +540,7 @@ function App() {
                         </div>
                         <div className="list-actions">
                           {statusBadge(l.status)}
-                          {l.email && !l.email_verified && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verify</button>}
+                          {l.email && !l.email_verified && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verifizieren</button>}
                           {l.email_verified && !abEmails.has(l.email?.toLowerCase()) && <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => addToAddressBook(l.id)} title="Ins Adressbuch">📖+</button>}
                           {l.email_verified && abEmails.has(l.email?.toLowerCase()) && <span className="badge badge-green">Im AB</span>}
                         </div>
@@ -357,7 +566,6 @@ function App() {
                   <button className="btn btn-primary" onClick={() => setShowAddForm(!showAddForm)}>{showAddForm ? 'Abbrechen' : '+ Kontakt'}</button>
                 </div>
               </div>
-              {/* Filter bar */}
               {addressBook.length > 0 && (
                 <div className="filter-bar">
                   <button className={`btn btn-sm ${abFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('all')}>Alle ({addressBook.length})</button>
@@ -414,99 +622,227 @@ function App() {
           </div>
         )}
 
-        {/* ═══ KAMPAGNE ════════════════════════════════ */}
+        {/* ═══ KAMPAGNE (Wizard) ═══════════════════════ */}
         {section === 'campaign' && (
           <div key="campaign">
             <h1 className="page-title">E-Mail-Kampagne</h1>
-            <p className="page-desc">Kontakte aus Adressbuch oder neuer Suche → Drafts → Genehmigen → Versand</p>
+            <p className="page-desc">Kontakte auswählen → Personalisierte E-Mails erstellen → Freigeben → Versenden</p>
 
-            {/* Source toggle */}
-            <div className="card">
-              <h2>Kontaktquelle</h2>
-              <div className="source-toggle">
-                <button className={`btn ${campaignSource === 'addressbook' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setCampaignSource('addressbook')}>
-                  📖 Adressbuch ({addressBook.length})
-                </button>
-                <button className={`btn ${campaignSource === 'search' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setCampaignSource('search')}>
-                  🔍 Neue Suche
-                </button>
-              </div>
-              {campaignSource === 'addressbook' && addressBook.length > 0 && (
-                <div style={{marginTop:'0.75rem'}}>
-                  <button className="btn btn-primary" disabled={loading} onClick={importAddressBookToCampaign}>
-                    {addressBook.filter(c => (c.contact_status || 'active') === 'active').length} nutzbare Kontakte als Leads importieren
-                  </button>
-                  <span className="hint" style={{marginLeft:'0.5rem'}}>Gesperrte Kontakte werden übersprungen.</span>
-                </div>
-              )}
-              {campaignSource === 'addressbook' && addressBook.length === 0 && (
-                <p className="hint" style={{marginTop:'0.5rem'}}>Adressbuch ist leer. Erst über Suche Kontakte verifizieren und übernehmen.</p>
-              )}
-            </div>
+            <WizardSteps />
 
-            {/* Search form (only if source=search) */}
-            {campaignSource === 'search' && (
+            {/* ── Step 1: Kontakte auswählen ── */}
+            {campStep === 1 && (
               <div className="card">
-                <CheckboxGroup label="Branchen" items={industries} selected={selIndustries} onToggle={v => toggle(selIndustries, setSelIndustries, v)} />
-                <CheckboxGroup label="Regionen" items={regions} selected={selRegions} onToggle={v => toggle(selRegions, setSelRegions, v)} />
-                <CheckboxGroup label="Größe (optional)" items={sizesOpts} selected={selSizes} onToggle={v => toggle(selSizes, setSelSizes, v)} />
-                <div className="search-actions">
-                  <button className="btn btn-primary" disabled={loading || !selIndustries.length || !selRegions.length} onClick={findCompanies}>Neue Suche ({selIndustries.length}×{selRegions.length})</button>
+                <div className="card-header">
+                  <h2>Kontakte aus Adressbuch auswählen ({activeContacts.length} nutzbar)</h2>
+                  <div className="card-actions">
+                    <button className="btn btn-ghost btn-sm" onClick={toggleCampSelectAll}>
+                      {campSelected.size === activeContacts.length ? 'Keine' : 'Alle'} auswählen
+                    </button>
+                  </div>
+                </div>
+                {activeContacts.length === 0 ? (
+                  <p className="empty">Keine nutzbaren Kontakte im Adressbuch. Bitte zuerst über die Suche Kontakte verifizieren und ins Adressbuch übernehmen.</p>
+                ) : (
+                  <>
+                    <div className="list">
+                      {activeContacts.map(a => (
+                        <div key={a.id} className={`list-item camp-select-item ${campSelected.has(a.id) ? 'camp-selected' : ''}`} onClick={() => toggleCampSelect(a.id)}>
+                          <div className="camp-checkbox">
+                            <input type="checkbox" checked={campSelected.has(a.id)} onChange={() => toggleCampSelect(a.id)} onClick={e => e.stopPropagation()} />
+                          </div>
+                          <div className="list-main">
+                            <strong>{a.name}</strong>
+                            <span className="sub">{a.title} · {a.company}</span>
+                            <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="wizard-actions">
+                      <span className="hint">{campSelected.size} von {activeContacts.length} ausgewählt</span>
+                      <button className="btn btn-primary" disabled={loading || campSelected.size === 0} onClick={campGoToStep2}>
+                        Weiter — Entwürfe erstellen
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── Step 2: Entwürfe bearbeiten (two-column) ── */}
+            {campStep === 2 && (
+              <div className="camp-two-col">
+                {/* Left: Contact list */}
+                <div className="camp-col-left">
+                  <div className="card">
+                    <h2>Kontakte ({campLeads.length})</h2>
+                    <div className="list">
+                      {campLeads.map(l => (
+                        <div key={l.id} className={`list-item camp-lead-item ${campActiveLeadId === l.id ? 'camp-lead-active' : ''}`} onClick={() => campSelectLead(l)}>
+                          <div className="list-main">
+                            <strong>{l.name}</strong>
+                            <span className="sub">{l.title} · {l.company}</span>
+                          </div>
+                          <div className="list-actions">
+                            {l.drafted_email ? <span className="badge badge-yellow">Entwurf</span> : <span className="badge badge-gray">Kein Entwurf</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Email editor */}
+                <div className="camp-col-right">
+                  <div className="card">
+                    {campActiveLeadId ? (
+                      <>
+                        {(() => {
+                          const activeLead = campLeads.find(l => l.id === campActiveLeadId)
+                          return activeLead ? (
+                            <>
+                              <div className="card-header">
+                                <h2>E-Mail an {activeLead.name}</h2>
+                                <div className="card-actions">
+                                  <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => campRegenerateDraft(activeLead.id)}>Neu generieren</button>
+                                </div>
+                              </div>
+                              <div className="camp-recipient">
+                                <span className="sub">An: {activeLead.email} · {activeLead.title} · {activeLead.company}</span>
+                              </div>
+                              {activeLead.drafted_email ? (
+                                <div className="camp-editor">
+                                  <div className="form-group">
+                                    <label>Betreff</label>
+                                    <input value={campDraftSubject} onChange={e => setCampDraftSubject(e.target.value)} />
+                                  </div>
+                                  <div className="form-group">
+                                    <label>Nachricht</label>
+                                    <textarea className="camp-textarea" value={campDraftBody} onChange={e => setCampDraftBody(e.target.value)} rows={14} />
+                                  </div>
+                                  <button className="btn btn-secondary" disabled={loading} onClick={campSaveDraft}>Änderungen speichern</button>
+                                </div>
+                              ) : (
+                                <p className="empty">Kein Entwurf vorhanden. Klicke "Neu generieren" um einen Entwurf zu erstellen.</p>
+                              )}
+                            </>
+                          ) : null
+                        })()}
+                      </>
+                    ) : (
+                      <p className="empty">Kontakt links auswählen, um den E-Mail-Entwurf zu sehen und zu bearbeiten.</p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Two-column results */}
-            {(companies.length > 0 || leads.length > 0) && (
-              <div className="two-col">
-                {campaignSource === 'search' && companies.length > 0 && (
-                  <div className="col-left">
-                    <div className="card">
-                      <div className="card-header"><h2>Unternehmen ({companies.length})</h2>
-                        <button className="btn btn-secondary" disabled={loading} onClick={findAllContacts}>Alle Kontakte</button>
-                      </div>
-                      <div className="list">{companies.map(c => (
-                        <div key={c.id} className="list-item">
-                          <div className="list-main"><strong>{c.name}</strong><span className="sub">{c.country} · {c.employee_count?.toLocaleString()} MA</span></div>
-                          <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => findContacts(c.id)}>Kontakte</button>
-                        </div>
-                      ))}</div>
-                    </div>
+            {/* Step 2 navigation */}
+            {campStep === 2 && (
+              <div className="wizard-actions">
+                <button className="btn btn-ghost" onClick={() => setCampStep(1)}>Zurück</button>
+                <button className="btn btn-primary" disabled={loading} onClick={campGoToStep3}>
+                  Weiter — Zur Freigabe
+                </button>
+              </div>
+            )}
+
+            {/* ── Step 3: Freigabe ── */}
+            {campStep === 3 && (
+              <div className="card">
+                <div className="card-header">
+                  <h2>Entwürfe freigeben</h2>
+                  <div className="card-actions">
+                    <button className="btn btn-secondary btn-sm" disabled={loading} onClick={campApproveAll}>Alle freigeben</button>
                   </div>
-                )}
-                <div className={campaignSource === 'search' && companies.length > 0 ? 'col-right' : ''} style={campaignSource === 'addressbook' ? {width:'100%'} : {}}>
-                  <div className="card">
-                    <div className="card-header"><h2>Pipeline ({leads.length})</h2>
-                      <div className="card-actions">{leads.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('leads')}>CSV</button>}</div>
-                    </div>
-                    {leads.length > 0 && (
-                      <div className="batch-bar">
-                        {unverifiedLeads.length > 0 && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={verifyAllEmails}>Verifizieren ({unverifiedLeads.length})</button>}
-                        <button className="btn btn-secondary btn-sm" disabled={loading} onClick={draftAllEmails}>Alle Drafts</button>
-                        <button className="btn btn-secondary btn-sm" disabled={loading} onClick={approveAllEmails}>Alle Approve</button>
-                        {authStatus?.authenticated && <button className="btn btn-primary btn-sm" disabled={loading} onClick={sendAllEmails}>Alle Senden</button>}
-                      </div>
-                    )}
-                    <div className="list">{leads.map(l => (
-                      <div key={l.id} className="list-item">
+                </div>
+                <p className="hint" style={{marginBottom:'0.75rem'}}>Prüfe jeden Entwurf und gib ihn einzeln oder alle auf einmal frei.</p>
+                <div className="list">
+                  {campLeads.filter(l => l.drafted_email).map(l => {
+                    const approved = l.drafted_email?.is_approved
+                    return (
+                      <div key={l.id} className={`list-item ${approved ? 'camp-approved-item' : ''}`}>
                         <div className="list-main">
                           <strong>{l.name}</strong>
-                          <span className="sub">{l.title} · {l.company}</span>
-                          <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}</span>
+                          <span className="sub">{l.title} · {l.company} · {l.email}</span>
+                          <span className="sub camp-subject-preview">Betreff: {l.drafted_email?.subject || '—'}</span>
                         </div>
                         <div className="list-actions">
-                          {statusBadge(l.status)}
-                          {l.email && !l.email_verified && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verify</button>}
-                          {!l.drafted_email && l.email && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => draftEmail(l.id)}>Draft</button>}
-                          {l.drafted_email && !l.drafted_email.is_approved && <button className="btn btn-ghost btn-sm" onClick={() => approveEmail(l.id)}>OK</button>}
-                          {l.drafted_email?.is_approved && l.status !== 'Email Sent' && authStatus?.authenticated && <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => sendEmail(l.id)}>Send</button>}
+                          {approved
+                            ? <>
+                                <span className="badge badge-green">Freigegeben</span>
+                                <button className="btn btn-ghost btn-sm" onClick={() => campUnapprove(l.id)}>Widerrufen</button>
+                              </>
+                            : <>
+                                <span className="badge badge-yellow">Entwurf</span>
+                                <button className="btn btn-primary btn-sm" onClick={() => campApprove(l.id)}>Freigeben</button>
+                              </>
+                          }
+                          <button className="btn btn-ghost btn-sm" onClick={() => { setCampActiveLeadId(l.id); setCampDraftSubject(l.drafted_email?.subject || ''); setCampDraftBody(l.drafted_email?.body || ''); setCampStep(2) }}>Bearbeiten</button>
                         </div>
                       </div>
-                    ))}{leads.length === 0 && <p className="empty">Noch keine Kontakte in der Pipeline.</p>}</div>
+                    )
+                  })}
+                </div>
+                <div className="wizard-actions">
+                  <button className="btn btn-ghost" onClick={() => setCampStep(2)}>Zurück</button>
+                  <button className="btn btn-primary" disabled={loading} onClick={campGoToStep4}>
+                    Weiter — Zum Versand
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── Step 4: Versand ── */}
+            {campStep === 4 && (
+              <div className="card">
+                <div className="card-header">
+                  <h2>E-Mails versenden</h2>
+                  <div className="card-actions">
+                    <button className="btn btn-ghost btn-sm" onClick={toggleSendSelectAll}>
+                      {campSendSelected.size === campLeads.filter(l => l.drafted_email?.is_approved && !l.date_email_sent).length ? 'Keine' : 'Alle'} auswählen
+                    </button>
                   </div>
-                  {!authStatus?.authenticated && leads.length > 0 && (
-                    <div className="card card-warn"><a href="/api/auth/google/login">Mit Google verbinden</a> um E-Mails zu senden.</div>
-                  )}
+                </div>
+                {!authStatus?.authenticated && (
+                  <div className="card card-warn" style={{marginBottom:'0.75rem'}}>
+                    <a href="/api/auth/google/login">Mit Google verbinden</a> um E-Mails zu senden.
+                  </div>
+                )}
+                <p className="hint" style={{marginBottom:'0.75rem'}}>
+                  Wähle die E-Mails aus, die gesendet werden sollen. Zwischen Sendungen wird 30–90 Sekunden gewartet (Google API Rate Limit).
+                </p>
+                <div className="list">
+                  {campLeads.filter(l => l.drafted_email?.is_approved).map(l => {
+                    const alreadySent = !!l.date_email_sent
+                    return (
+                      <div key={l.id} className={`list-item ${alreadySent ? 'camp-sent-item' : ''} ${campSendSelected.has(l.id) ? 'camp-selected' : ''}`}>
+                        {!alreadySent && (
+                          <div className="camp-checkbox">
+                            <input type="checkbox" checked={campSendSelected.has(l.id)} onChange={() => toggleSendSelect(l.id)} />
+                          </div>
+                        )}
+                        <div className="list-main">
+                          <strong>{l.name}</strong>
+                          <span className="sub">{l.email} · {l.title} · {l.company}</span>
+                          <span className="sub camp-subject-preview">Betreff: {l.drafted_email?.subject || '—'}</span>
+                        </div>
+                        <div className="list-actions">
+                          {alreadySent
+                            ? <span className="badge badge-green">Gesendet</span>
+                            : <span className="badge badge-blue">Bereit</span>
+                          }
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="wizard-actions">
+                  <button className="btn btn-ghost" onClick={() => setCampStep(3)}>Zurück</button>
+                  <button className="btn btn-primary btn-send" disabled={loading || campSendSelected.size === 0 || !authStatus?.authenticated} onClick={campSendEmails}>
+                    {campSendSelected.size} E-Mail{campSendSelected.size !== 1 ? 's' : ''} jetzt senden
+                  </button>
                 </div>
               </div>
             )}
@@ -577,5 +913,3 @@ function App() {
 }
 
 export default App
-
-
