@@ -1,9 +1,12 @@
 # Prospecting routes – find companies, contacts, verify emails
 from __future__ import annotations
 
+import asyncio
+import logging
+from typing import Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..models.db import get_db
@@ -11,42 +14,71 @@ from ..services import database_service as db_svc
 from ..services import perplexity_service as pplx
 from ..models.schemas import Industry, Region
 
+logger = logging.getLogger("harpo.prospecting")
+
 router = APIRouter(prefix="/prospecting", tags=["Prospecting"])
 
 
 @router.post("/find-companies")
 async def find_companies(
-    industry: str,
-    region: str,
+    industries: list[str] = Query(...),
+    regions: list[str] = Query(...),
+    sizes: list[str] = Query(default=[]),
     db: Session = Depends(get_db),
 ):
-    """Find companies by industry and region via Perplexity API."""
+    """Find companies by multiple industries and regions via Perplexity API."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
         raise HTTPException(400, "Perplexity API Key nicht konfiguriert.")
 
-    # Resolve industry & region
-    try:
-        ind = Industry(industry)
-    except ValueError:
-        raise HTTPException(400, f"Unbekannte Branche: {industry}")
-    try:
-        reg = Region(region)
-    except ValueError:
-        raise HTTPException(400, f"Unbekannte Region: {region}")
+    # Resolve industries & regions
+    resolved_industries = []
+    for ind_str in industries:
+        try:
+            resolved_industries.append(Industry(ind_str))
+        except ValueError:
+            raise HTTPException(400, f"Unbekannte Branche: {ind_str}")
 
-    companies_raw = await pplx.find_companies(ind.value, reg.countries, api_key)
+    resolved_regions = []
+    for reg_str in regions:
+        try:
+            resolved_regions.append(Region(reg_str))
+        except ValueError:
+            raise HTTPException(400, f"Unbekannte Region: {reg_str}")
 
-    # Deduplicate against existing DB
-    saved = []
-    for c in companies_raw:
-        if db_svc.company_exists(db, c["name"]):
-            continue
-        c["id"] = uuid4()
-        obj = db_svc.save_company(db, c)
-        saved.append(db_svc.company_db_to_response(obj))
+    if not resolved_industries or not resolved_regions:
+        raise HTTPException(400, "Mindestens eine Branche und eine Region auswählen.")
 
-    return {"success": True, "data": saved, "total": len(saved)}
+    # Search for each industry-region combination
+    all_saved = []
+    for ind in resolved_industries:
+        for reg in resolved_regions:
+            try:
+                companies_raw = await pplx.find_companies(ind.value, reg.countries, api_key)
+                for c in companies_raw:
+                    if db_svc.company_exists(db, c["name"]):
+                        continue
+                    # Filter by size if specified
+                    if sizes:
+                        emp = c.get("employee_count", 0)
+                        matches_size = False
+                        for s in sizes:
+                            if s == "0-200 Mitarbeiter" and emp <= 200:
+                                matches_size = True
+                            elif s == "201-5.000 Mitarbeiter" and 201 <= emp <= 5000:
+                                matches_size = True
+                            elif s == "5.001-500.000 Mitarbeiter" and emp > 5000:
+                                matches_size = True
+                        if not matches_size and emp > 0:
+                            continue
+                    c["id"] = uuid4()
+                    obj = db_svc.save_company(db, c)
+                    all_saved.append(db_svc.company_db_to_response(obj))
+            except Exception as ex:
+                logger.warning(f"Search failed for {ind.value} / {reg.value}: {ex}")
+                continue
+
+    return {"success": True, "data": all_saved, "total": len(all_saved)}
 
 
 @router.post("/find-contacts/{company_id}")
@@ -133,13 +165,18 @@ async def verify_email(
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
 
-    result = await pplx.verify_email(
-        lead.name, lead.title, lead.company, lead.email, lead.linkedin_url, api_key
-    )
+    try:
+        result = await pplx.verify_email(
+            lead.name, lead.title, lead.company, lead.email, lead.linkedin_url, api_key
+        )
+    except Exception as ex:
+        logger.error(f"Email verification failed for lead {lead_id}: {ex}")
+        raise HTTPException(500, f"Verifikation fehlgeschlagen: {str(ex)[:200]}")
+
     # Update lead
     lead.email = result["email"]
     lead.email_verified = result["verified"]
-    lead.verification_notes = result["notes"]
+    lead.verification_notes = result.get("notes", "")
     if result["verified"]:
         lead.status = "Contacted"
     db.commit()
@@ -157,6 +194,7 @@ async def verify_all_emails(db: Session = Depends(get_db)):
     leads = db_svc.load_leads(db)
     unverified = [l for l in leads if not l.email_verified]
     verified_count = 0
+    errors = []
     for lead in unverified:
         try:
             result = await pplx.verify_email(
@@ -164,12 +202,19 @@ async def verify_all_emails(db: Session = Depends(get_db)):
             )
             lead.email = result["email"]
             lead.email_verified = result["verified"]
-            lead.verification_notes = result["notes"]
+            lead.verification_notes = result.get("notes", "")
             if result["verified"]:
                 lead.status = "Contacted"
                 verified_count += 1
             db.commit()
-        except Exception:
+        except Exception as ex:
+            logger.warning(f"Verify failed for {lead.name}: {ex}")
+            errors.append(f"{lead.name}: {str(ex)[:100]}")
             continue
 
-    return {"success": True, "verified": verified_count, "total": len(unverified)}
+    return {
+        "success": True,
+        "verified": verified_count,
+        "total": len(unverified),
+        "errors": errors[:5] if errors else [],
+    }

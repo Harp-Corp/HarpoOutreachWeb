@@ -13,6 +13,37 @@ function App() {
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
 
+  // Multi-select state for company search
+  const [selIndustries, setSelIndustries] = useState([])
+  const [selRegions, setSelRegions] = useState([])
+  const [selSizes, setSelSizes] = useState([])
+
+  const industries = [
+    { value: 'K - Finanzdienstleistungen', label: 'Finanzdienstleistungen' },
+    { value: 'Q - Gesundheitswesen', label: 'Gesundheitswesen' },
+    { value: 'J - Information und Kommunikation', label: 'ICT' },
+    { value: 'D - Energieversorgung', label: 'Energie' },
+    { value: 'C - Verarbeitendes Gewerbe', label: 'Fertigung' },
+    { value: 'H - Verkehr und Lagerei', label: 'Transport' },
+    { value: 'M - Freiberufliche Dienstleistungen', label: 'Professional Services' },
+  ]
+
+  const regions = [
+    { value: 'DACH', label: 'DACH' },
+    { value: 'UK', label: 'UK' },
+    { value: 'Nordics', label: 'Nordics' },
+    { value: 'Benelux', label: 'Benelux' },
+    { value: 'France', label: 'France' },
+    { value: 'Baltics', label: 'Baltics' },
+    { value: 'Iberia', label: 'Iberia' },
+  ]
+
+  const sizes = [
+    { value: '0-200 Mitarbeiter', label: '0–200' },
+    { value: '201-5.000 Mitarbeiter', label: '201–5.000' },
+    { value: '5.001-500.000 Mitarbeiter', label: '5.001+' },
+  ]
+
   const fetchJson = async (url, opts = {}) => {
     const resp = await fetch(url, opts)
     if (!resp.ok) {
@@ -55,11 +86,24 @@ function App() {
     try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {}
   }
 
+  // Toggle helpers for multi-select
+  const toggle = (arr, setArr, val) => {
+    setArr(prev => prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val])
+  }
+
   // ─── Company Search ──────────────────────────────────────
-  const findCompanies = async (industry, region) => {
+  const findCompanies = async () => {
+    if (selIndustries.length === 0 || selRegions.length === 0) {
+      setError('Bitte mindestens eine Branche und eine Region auswählen.')
+      return
+    }
     setLoading(true); setError('')
     try {
-      const r = await fetchJson(`${API}/prospecting/find-companies?industry=${encodeURIComponent(industry)}&region=${encodeURIComponent(region)}`, { method: 'POST' })
+      const params = new URLSearchParams()
+      selIndustries.forEach(v => params.append('industries', v))
+      selRegions.forEach(v => params.append('regions', v))
+      selSizes.forEach(v => params.append('sizes', v))
+      const r = await fetchJson(`${API}/prospecting/find-companies?${params.toString()}`, { method: 'POST' })
       showSuccess(`${r.total || 0} neue Unternehmen gefunden`)
       await loadCompanies()
     } catch (e) { setError(e.message) }
@@ -92,7 +136,9 @@ function App() {
     setLoading(true); setError('')
     try {
       const r = await fetchJson(`${API}/prospecting/verify-all`, { method: 'POST' })
-      showSuccess(`${r.verified || 0} von ${r.total || 0} E-Mails verifiziert`)
+      let msg = `${r.verified || 0} von ${r.total || 0} E-Mails verifiziert`
+      if (r.errors && r.errors.length > 0) msg += ` (${r.errors.length} Fehler)`
+      showSuccess(msg)
       await loadLeads()
     } catch (e) { setError(e.message) }
     setLoading(false)
@@ -187,6 +233,25 @@ function App() {
   const leadsWithDraft = leads.filter(l => l.drafted_email)
   const unverifiedLeads = leads.filter(l => !l.email_verified && l.email)
 
+  // Checkbox group component
+  const CheckboxGroup = ({ label, items, selected, onChange }) => (
+    <div className="form-group">
+      <label>{label}</label>
+      <div className="checkbox-group">
+        {items.map(item => (
+          <label key={item.value} className={`checkbox-item ${selected.includes(item.value) ? 'checked' : ''}`}>
+            <input
+              type="checkbox"
+              checked={selected.includes(item.value)}
+              onChange={() => onChange(item.value)}
+            />
+            <span>{item.label}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+
   return (
     <div className="app">
       <h1>HarpoOutreach Web</h1>
@@ -234,36 +299,36 @@ function App() {
       {/* ─── Companies ──────────────────────────────── */}
       {tab === 'companies' && (
         <div>
-          <div className="card" style={{display:'flex',gap:'0.5rem',alignItems:'end',flexWrap:'wrap'}}>
-            <div className="form-group" style={{flex:1,minWidth:'150px'}}>
-              <label>Branche</label>
-              <select id="industry">
-                <option value="K - Finanzdienstleistungen">Finanzdienstleistungen</option>
-                <option value="Q - Gesundheitswesen">Gesundheitswesen</option>
-                <option value="J - Information und Kommunikation">ICT</option>
-                <option value="D - Energieversorgung">Energie</option>
-                <option value="C - Verarbeitendes Gewerbe">Fertigung</option>
-                <option value="H - Verkehr und Lagerei">Transport</option>
-                <option value="M - Freiberufliche Dienstleistungen">Professional Services</option>
-              </select>
+          <div className="card">
+            <h2>Unternehmenssuche</h2>
+            <CheckboxGroup
+              label="Branchen"
+              items={industries}
+              selected={selIndustries}
+              onChange={(val) => toggle(selIndustries, setSelIndustries, val)}
+            />
+            <CheckboxGroup
+              label="Regionen"
+              items={regions}
+              selected={selRegions}
+              onChange={(val) => toggle(selRegions, setSelRegions, val)}
+            />
+            <CheckboxGroup
+              label="Unternehmensgröße (optional)"
+              items={sizes}
+              selected={selSizes}
+              onChange={(val) => toggle(selSizes, setSelSizes, val)}
+            />
+            <div style={{display:'flex',gap:'0.5rem',marginTop:'1rem'}}>
+              <button className="btn btn-primary" disabled={loading || selIndustries.length === 0 || selRegions.length === 0} onClick={findCompanies}>
+                Suchen ({selIndustries.length} × {selRegions.length})
+              </button>
+              {(selIndustries.length > 0 || selRegions.length > 0 || selSizes.length > 0) && (
+                <button className="btn btn-secondary" onClick={() => { setSelIndustries([]); setSelRegions([]); setSelSizes([]) }}>
+                  Zurücksetzen
+                </button>
+              )}
             </div>
-            <div className="form-group" style={{flex:1,minWidth:'150px'}}>
-              <label>Region</label>
-              <select id="region">
-                <option value="DACH">DACH</option>
-                <option value="UK">UK</option>
-                <option value="Nordics">Nordics</option>
-                <option value="Benelux">Benelux</option>
-                <option value="France">France</option>
-                <option value="Baltics">Baltics</option>
-                <option value="Iberia">Iberia</option>
-              </select>
-            </div>
-            <button className="btn btn-primary" disabled={loading} onClick={() => {
-              const ind = document.getElementById('industry').value
-              const reg = document.getElementById('region').value
-              findCompanies(ind, reg)
-            }}>Suchen</button>
           </div>
           <div className="card">
             <table>
