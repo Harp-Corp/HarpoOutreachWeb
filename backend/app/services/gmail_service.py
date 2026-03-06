@@ -18,7 +18,8 @@ GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
 def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
-    """Build a multipart/alternative MIME email with plain text + HTML (professional signature)."""
+    """Build a multipart/alternative MIME email with plain text + HTML (professional signature).
+    Includes X-Harpo-Campaign header for campaign tracking."""
     boundary = f"HarpoMIME_{uuid4().hex}"
 
     # Unsubscribe footer
@@ -75,6 +76,7 @@ def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
     mime = f"From: Martin Foerster <{from_addr}>\r\n"
     mime += f"To: {to}\r\n"
     mime += f"Subject: {encoded_subject}\r\n"
+    mime += "X-Harpo-Campaign: comply-reg\r\n"
     mime += "List-Unsubscribe: <mailto:unsubscribe@harpocrates-corp.com?subject=Unsubscribe>\r\n"
     mime += "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
     mime += "MIME-Version: 1.0\r\n"
@@ -95,7 +97,7 @@ def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
 
 
 async def _gmail_api_send(json_data: dict, access_token: str) -> dict:
-    """POST to Gmail messages/send. Returns response dict or raises."""
+    """POST to Gmail messages/send. Returns response dict with id and threadId, or raises."""
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{GMAIL_BASE}/messages/send",
@@ -123,8 +125,8 @@ async def send_email(
     subject: str,
     body: str,
     access_token: str,
-) -> str:
-    """Send an email via Gmail API. Returns message ID."""
+) -> dict:
+    """Send an email via Gmail API. Returns dict with 'msg_id' and 'thread_id'."""
     raw_mime = _build_mime_email(to, from_addr, subject, body)
     # URL-safe base64
     encoded = (
@@ -135,8 +137,9 @@ async def send_email(
     payload = {"raw": encoded}
     result = await _gmail_api_send(payload, access_token)
     msg_id = result.get("id", "sent")
-    logger.info(f"Email sent to {to}, ID: {msg_id}")
-    return msg_id
+    thread_id = result.get("threadId", "")
+    logger.info(f"Email sent to {to}, ID: {msg_id}, threadId: {thread_id}")
+    return {"msg_id": msg_id, "thread_id": thread_id}
 
 
 # ─── Check Replies ───────────────────────────────────────────────
@@ -231,41 +234,120 @@ async def check_replies(
     sent_subjects: list[str],
     lead_emails: list[str],
     access_token: str,
-    subject_tag: str = "[Comply.Reg]",
+    subject_tag: str = "",
+    thread_ids: list[str] | None = None,
 ) -> list[dict]:
     """Check for replies to sent emails.
-    Filters by subject_tag to only find replies to campaign emails."""
+    Primary method: search by Gmail thread IDs (most accurate).
+    Fallback: search by lead email addresses."""
     all_replies = []
     seen_ids: set[str] = set()
 
-    # Primary search: find emails with our campaign tag in the subject
-    if subject_tag:
-        query = f'subject:"{subject_tag}" -from:me newer_than:90d'
-        msgs = await search_gmail(query, access_token, max_results=50)
-        for msg in msgs:
-            if msg["id"] in seen_ids:
+    # Primary: Thread-based search (most reliable)
+    if thread_ids:
+        for tid in thread_ids:
+            if not tid:
                 continue
-            seen_ids.add(msg["id"])
-            if "mf@harpocrates-corp.com" in msg["from"].lower():
-                continue
-            all_replies.append(msg)
+            try:
+                thread_msgs = await _fetch_thread_replies(tid, access_token)
+                for msg in thread_msgs:
+                    if msg["id"] in seen_ids:
+                        continue
+                    seen_ids.add(msg["id"])
+                    # Skip our own sent messages
+                    if "mf@harpocrates-corp.com" in msg["from"].lower():
+                        continue
+                    all_replies.append(msg)
+            except Exception as e:
+                logger.warning(f"Thread fetch failed for {tid}: {e}")
 
-    # Fallback: also search by lead email addresses (only if they sent TO us)
-    for email in lead_emails:
-        email_clean = email.lower().strip()
-        if not email_clean:
-            continue
-        query = f'from:{email_clean} subject:"{subject_tag}" newer_than:90d'
-        msgs = await search_gmail(query, access_token, max_results=5)
-        for msg in msgs:
-            if msg["id"] in seen_ids:
+    # Fallback: search by lead email addresses
+    if not thread_ids:
+        for email in lead_emails:
+            email_clean = email.lower().strip()
+            if not email_clean:
                 continue
-            seen_ids.add(msg["id"])
-            if "mf@harpocrates-corp.com" in msg["from"].lower():
-                continue
-            all_replies.append(msg)
+            query = f"from:{email_clean} newer_than:90d"
+            msgs = await search_gmail(query, access_token, max_results=5)
+            for msg in msgs:
+                if msg["id"] in seen_ids:
+                    continue
+                seen_ids.add(msg["id"])
+                if "mf@harpocrates-corp.com" in msg["from"].lower():
+                    continue
+                all_replies.append(msg)
 
     return all_replies
+
+
+async def _fetch_thread_replies(thread_id: str, access_token: str) -> list[dict]:
+    """Fetch all messages in a Gmail thread and return non-first messages (replies)."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{GMAIL_BASE}/threads/{thread_id}?format=full",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if resp.status_code != 200:
+        logger.warning(f"Thread fetch {thread_id} failed: {resp.status_code}")
+        return []
+
+    data = resp.json()
+    messages = data.get("messages", [])
+
+    # Skip the first message (our sent email), only return replies
+    if len(messages) <= 1:
+        return []
+
+    results = []
+    for msg_data in messages[1:]:  # skip first (our outbound)
+        payload = msg_data.get("payload", {})
+        headers = payload.get("headers", [])
+
+        from_addr = ""
+        subject = ""
+        date = ""
+        for h in headers:
+            name = (h.get("name") or "").lower()
+            if name == "from":
+                from_addr = h.get("value", "")
+            elif name == "subject":
+                subject = h.get("value", "")
+            elif name == "date":
+                date = h.get("value", "")
+
+        snippet = msg_data.get("snippet", "")
+        body = snippet
+
+        parts = payload.get("parts", [])
+        if parts:
+            for part in parts:
+                if part.get("mimeType") == "text/plain":
+                    b64 = part.get("body", {}).get("data", "")
+                    if b64:
+                        padded = b64.replace("-", "+").replace("_", "/")
+                        try:
+                            body = base64.b64decode(padded).decode("utf-8")
+                        except Exception:
+                            pass
+        else:
+            b64 = payload.get("body", {}).get("data", "")
+            if b64:
+                padded = b64.replace("-", "+").replace("_", "/")
+                try:
+                    body = base64.b64decode(padded).decode("utf-8")
+                except Exception:
+                    pass
+
+        results.append({
+            "id": msg_data.get("id", ""),
+            "from": from_addr,
+            "subject": subject,
+            "date": date,
+            "snippet": snippet,
+            "body": body,
+        })
+
+    return results
 
 
 # ─── Bounce Detection ────────────────────────────────────────────

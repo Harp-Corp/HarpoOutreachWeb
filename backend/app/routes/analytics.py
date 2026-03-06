@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..models.db import LeadDB, get_db
 from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
-from .email_pipeline import _get_access_token, _refresh_google_token, SUBJECT_TAG
+from .email_pipeline import _get_access_token, _refresh_google_token
 
 logger = logging.getLogger("harpo.analytics")
 
@@ -80,9 +80,10 @@ async def check_replies(db: Session = Depends(get_db)):
     if not sent_leads:
         return {"success": True, "message": "Keine gesendeten E-Mails.", "replies": 0, "unsubscribes": 0}
 
-    # Collect subjects and emails for search
+    # Collect subjects, emails, and thread IDs for search
     subjects = []
     lead_emails = []
+    thread_ids = []
     for lead in sent_leads:
         if lead.drafted_email_json:
             try:
@@ -94,6 +95,8 @@ async def check_replies(db: Session = Depends(get_db)):
                 pass
         if lead.email:
             lead_emails.append(lead.email)
+        if hasattr(lead, 'gmail_thread_id') and lead.gmail_thread_id:
+            thread_ids.append(lead.gmail_thread_id)
 
     # Search Gmail for replies
     replies_found = 0
@@ -103,7 +106,7 @@ async def check_replies(db: Session = Depends(get_db)):
 
     try:
         # Check replies
-        reply_msgs = await gmail.check_replies(subjects, lead_emails, access_token, subject_tag=SUBJECT_TAG)
+        reply_msgs = await gmail.check_replies(subjects, lead_emails, access_token, thread_ids=thread_ids or None)
 
         for msg in reply_msgs:
             from_addr = msg.get("from", "").lower()

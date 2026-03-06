@@ -77,6 +77,7 @@ class LeadDB(Base):
     opted_out = Column(Boolean, nullable=False, default=False)
     opt_out_date = Column(DateTime, nullable=True)
     delivery_status = Column(String, nullable=False, default="Pending")
+    gmail_thread_id = Column(String, nullable=True)  # Gmail thread ID for reply tracking
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
@@ -182,6 +183,7 @@ def init_db():
             ("opt_out_date", "ALTER TABLE leads ADD COLUMN opt_out_date TIMESTAMP"),
             ("follow_up_email_json", "ALTER TABLE leads ADD COLUMN follow_up_email_json TEXT"),
             ("date_follow_up_sent", "ALTER TABLE leads ADD COLUMN date_follow_up_sent TIMESTAMP"),
+            ("gmail_thread_id", "ALTER TABLE leads ADD COLUMN gmail_thread_id VARCHAR"),
         ]
         for col_name, sql in migrations:
             if col_name not in lead_cols:

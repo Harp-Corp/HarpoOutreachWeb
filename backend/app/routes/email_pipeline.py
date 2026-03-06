@@ -20,15 +20,6 @@ from ..services import perplexity_service as pplx
 
 router = APIRouter(prefix="/email", tags=["Email Pipeline"])
 
-SUBJECT_TAG = "[Comply.Reg]"
-
-
-def _tagged_subject(subject: str) -> str:
-    """Ensure the subject starts with [Comply.Reg] tag for reply-tracking."""
-    if SUBJECT_TAG in subject:
-        return subject
-    return f"{SUBJECT_TAG} {subject}"
-
 
 import logging
 import time as _time
@@ -441,23 +432,21 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
     _logger.info(f"Sending email to {lead.email} (lead={lead_id}, subject='{draft.get('subject', '')[:50]}')")
 
-    send_subject = _tagged_subject(draft["subject"])
-
     async def _try_send(token):
         return await gmail.send_email(
             to=lead.email, from_addr=sender,
-            subject=send_subject, body=draft["body"],
+            subject=draft["subject"], body=draft["body"],
             access_token=token,
         )
 
     try:
-        msg_id = await _try_send(access_token)
+        send_result = await _try_send(access_token)
     except PermissionError:
         # Token expired mid-request — refresh and retry once
         _logger.warning(f"Gmail 401 for {lead.email}, refreshing token and retrying")
         try:
             access_token = _refresh_google_token(db)
-            msg_id = await _try_send(access_token)
+            send_result = await _try_send(access_token)
         except Exception as retry_e:
             _logger.error(f"Retry also failed for {lead.email}: {retry_e}")
             lead.delivery_status = "Failed"
@@ -473,14 +462,14 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
 
     lead.date_email_sent = datetime.utcnow()
     draft["sent_date"] = datetime.utcnow().isoformat()
-    draft["subject"] = send_subject  # persist tagged subject
     lead.drafted_email_json = json.dumps(draft)
     lead.status = "Email Sent"
     lead.delivery_status = "Delivered"
+    lead.gmail_thread_id = send_result.get("thread_id", "")
     lead.updated_at = datetime.utcnow()
     db.commit()
-    _logger.info(f"Email sent successfully to {lead.email}, msg_id={msg_id}")
-    return {"success": True, "message_id": msg_id}
+    _logger.info(f"Email sent successfully to {lead.email}, msg_id={send_result.get('msg_id')}, thread_id={send_result.get('thread_id')}")
+    return {"success": True, "message_id": send_result.get("msg_id")}
 
 
 # ─── Send All Approved ────────────────────────────────────────
@@ -523,22 +512,21 @@ async def send_all_approved(db: Session = Depends(get_db)):
             continue
 
         draft = json.loads(lead.drafted_email_json)
-        send_subject = _tagged_subject(draft["subject"])
         _logger.info(f"[send-all] Sending to {lead.email} ({lead.name})")
         try:
-            await gmail.send_email(
+            send_result = await gmail.send_email(
                 to=lead.email,
                 from_addr=sender,
-                subject=send_subject,
+                subject=draft["subject"],
                 body=draft["body"],
                 access_token=access_token,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
-            draft["subject"] = send_subject  # persist tagged subject
             lead.drafted_email_json = json.dumps(draft)
             lead.delivery_status = "Delivered"
+            lead.gmail_thread_id = send_result.get("thread_id", "")
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
@@ -551,17 +539,17 @@ async def send_all_approved(db: Session = Depends(get_db)):
             _logger.warning(f"[send-all] Gmail 401 for {lead.email}, refreshing token")
             try:
                 access_token = _refresh_google_token(db)
-                await gmail.send_email(
+                send_result = await gmail.send_email(
                     to=lead.email, from_addr=sender,
-                    subject=send_subject, body=draft["body"],
+                    subject=draft["subject"], body=draft["body"],
                     access_token=access_token,
                 )
                 lead.status = "Email Sent"
                 lead.date_email_sent = datetime.utcnow()
                 draft["sent_date"] = datetime.utcnow().isoformat()
-                draft["subject"] = send_subject  # persist tagged subject
                 lead.drafted_email_json = json.dumps(draft)
                 lead.delivery_status = "Delivered"
+                lead.gmail_thread_id = send_result.get("thread_id", "")
                 lead.updated_at = datetime.utcnow()
                 db.commit()
                 sent += 1
@@ -647,22 +635,20 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
 
         _logger.info(f"Sending to {lead.email} ({lead.name} @ {lead.company}), subject='{draft.get('subject', '')[:60]}'")
 
-        send_subject = _tagged_subject(draft["subject"])
-
         try:
-            await gmail.send_email(
+            send_result = await gmail.send_email(
                 to=lead.email,
                 from_addr=sender,
-                subject=send_subject,
+                subject=draft["subject"],
                 body=draft["body"],
                 access_token=access_token,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
-            draft["subject"] = send_subject  # persist tagged subject
             lead.drafted_email_json = json.dumps(draft)
             lead.delivery_status = "Delivered"
+            lead.gmail_thread_id = send_result.get("thread_id", "")
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
@@ -678,17 +664,17 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
             _logger.warning(f"Gmail 401 for {lead.email}, refreshing token")
             try:
                 access_token = _refresh_google_token(db)
-                await gmail.send_email(
+                send_result = await gmail.send_email(
                     to=lead.email, from_addr=sender,
-                    subject=send_subject, body=draft["body"],
+                    subject=draft["subject"], body=draft["body"],
                     access_token=access_token,
                 )
                 lead.status = "Email Sent"
                 lead.date_email_sent = datetime.utcnow()
                 draft["sent_date"] = datetime.utcnow().isoformat()
-                draft["subject"] = send_subject  # persist tagged subject
                 lead.drafted_email_json = json.dumps(draft)
                 lead.delivery_status = "Delivered"
+                lead.gmail_thread_id = send_result.get("thread_id", "")
                 lead.updated_at = datetime.utcnow()
                 db.commit()
                 sent += 1
