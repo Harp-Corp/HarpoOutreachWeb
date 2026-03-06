@@ -211,24 +211,6 @@ function App() {
   }
   const exportCSV = (type) => window.open(`${API}/data/${type}/export`, '_blank')
 
-  // Analytics actions
-  const checkReplies = async () => {
-    startLoading('Gmail wird auf Antworten geprüft...'); setError('')
-    try {
-      const r = await fetchJson(`${API}/analytics/check-replies`, { method: 'POST' })
-      const parts = []
-      if (r.replies > 0) parts.push(`${r.replies} Antwort${r.replies > 1 ? 'en' : ''}`)
-      if (r.unsubscribes > 0) parts.push(`${r.unsubscribes} Abmeldung${r.unsubscribes > 1 ? 'en' : ''}`)
-      if (r.bounces > 0) parts.push(`${r.bounces} Bounce${r.bounces > 1 ? 's' : ''}`)
-      if (parts.length > 0) showSuccess(`Gefunden: ${parts.join(', ')}`)
-      else showSuccess('Keine neuen Reaktionen gefunden.')
-      await loadSentEmails(); await loadAnalyticsSummary()
-    } catch (e) { setError(e.message) }
-    stopLoading()
-  }
-
-  const [analyticsExpanded, setAnalyticsExpanded] = useState(null) // expanded email ID
-
   const renderPostContent = (text) => {
     if (!text) return ''
     const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
