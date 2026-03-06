@@ -875,8 +875,63 @@ WICHTIG: Erfinde NICHTS. Nur verifizierbare Fakten."""
         # Append citations as context for email drafting
         if citations:
             content += "\n\nSources: " + ", ".join(citations[:10])
+        # Fallback: if Perplexity couldn't find company-specific info
+        if _is_unknown_company(content):
+            return _generic_compliance_challenges(company_name, company_industry)
         return content
+    if isinstance(result, str) and _is_unknown_company(result):
+        return _generic_compliance_challenges(company_name, company_industry)
     return result
+
+
+def _is_unknown_company(content: str) -> bool:
+    """Detect when Perplexity couldn't find useful information about a company."""
+    lower = content.lower()
+    indicators = [
+        "nicht bekannt",
+        "not known",
+        "no information",
+        "keine informationen",
+        "could not find",
+        "unable to find",
+        "no results",
+        "i could not",
+        "i couldn't",
+        "no specific",
+        "not publicly available",
+        "nicht öffentlich",
+        "business model is unclear",
+        "geschäftsmodell",
+        "does not appear to be",
+        "no publicly available",
+    ]
+    hit_count = sum(1 for ind in indicators if ind in lower)
+    # If content is very short or has multiple unknown indicators, treat as unknown
+    return hit_count >= 2 or (len(content.strip()) < 100 and hit_count >= 1)
+
+
+def _generic_compliance_challenges(company_name: str, company_industry: str) -> str:
+    """Return generic EU compliance challenges when company-specific info is unavailable."""
+    industry_hint = f" in the {company_industry} sector" if company_industry else ""
+    return f"""Generic EU Regulatory Compliance Challenges for {company_name}{industry_hint}:
+
+1. GDPR (General Data Protection Regulation): All EU-based companies must ensure lawful data processing, maintain Records of Processing Activities (ROPA), respond to Data Subject Access Requests (DSARs) within 30 days, and report data breaches to supervisory authorities within 72 hours. Non-compliance fines up to EUR 20M or 4% of global annual turnover.
+
+2. NIS2 Directive (Network and Information Security): Effective October 2024, NIS2 significantly expands the scope of cybersecurity obligations across the EU. Companies must implement risk management measures, supply chain security assessments, and incident reporting within 24 hours. Fines up to EUR 10M or 2% of global turnover.
+
+3. CSRD (Corporate Sustainability Reporting Directive): Phased implementation 2024-2026 requires detailed ESG reporting aligned with European Sustainability Reporting Standards (ESRS). Mandatory double materiality assessments and third-party assurance.
+
+4. EU AI Act: Effective August 2024 with phased compliance deadlines through 2026. Requires risk classification of AI systems, transparency obligations, and conformity assessments for high-risk AI. Fines up to EUR 35M or 7% of global turnover.
+
+5. AML/CFT Regulations: The EU Anti-Money Laundering Authority (AMLA) starts operations in 2025. Enhanced due diligence requirements, beneficial ownership transparency, and cross-border cooperation obligations.
+
+Key Compliance Deadlines:
+- NIS2 transposition: October 2024 (enforcement ongoing)
+- CSRD first reports: FY2024 for large PIEs, FY2025 for large companies
+- EU AI Act prohibited practices: February 2025
+- EU AI Act high-risk obligations: August 2026
+
+These regulations create significant operational complexity, requiring continuous monitoring of regulatory changes, gap analyses, and cross-departmental coordination."""
 
 
 # ─── 5) Draft Email — REASONING model for deep personalization ──

@@ -137,8 +137,12 @@ async def draft_email(lead_id: UUID, db: Session = Depends(get_db)):
     company_name = company.name if company else lead.company
     company_industry = company.industry if company else ""
 
-    # Step 1: Research challenges
-    challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+    # Step 1: Research challenges (with fallback for unknown companies)
+    try:
+        challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+    except Exception as e:
+        _logger.warning(f"Challenge research failed for {company_name}: {e}, using generic fallback")
+        challenges = pplx._generic_compliance_challenges(company_name, company_industry)
 
     # Step 2: Draft email
     sender_name = db_svc.get_setting(db, "sender_name", "Martin Foerster")
@@ -191,7 +195,10 @@ async def draft_all_emails(db: Session = Depends(get_db)):
             company_name = company.name if company else lead.company
             company_industry = company.industry if company else ""
 
-            challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+            try:
+                challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+            except Exception:
+                challenges = pplx._generic_compliance_challenges(company_name, company_industry)
             sender_name = db_svc.get_setting(db, "sender_name", "Martin Foerster")
             email_data = await pplx.draft_email(
                 lead.name, lead.title, lead.company, challenges, sender_name, api_key
@@ -249,7 +256,10 @@ async def draft_batch_emails(data: BatchLeadIds, db: Session = Depends(get_db)):
             company_name = company.name if company else lead.company
             company_industry = company.industry if company else ""
 
-            challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+            try:
+                challenges = await pplx.research_challenges(company_name, company_industry, api_key)
+            except Exception:
+                challenges = pplx._generic_compliance_challenges(company_name, company_industry)
             sender_name = db_svc.get_setting(db, "sender_name", "Martin Foerster")
             email_data = await pplx.draft_email(
                 lead.name, lead.title, lead.company, challenges, sender_name, api_key
@@ -399,6 +409,47 @@ async def delete_draft(lead_id: UUID, db: Session = Depends(get_db)):
     lead.updated_at = datetime.utcnow()
     db.commit()
     return {"success": True}
+
+
+@router.post("/reset/{lead_id}")
+async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
+    """Reset a lead for re-sending: clears draft, send date, thread ID, delivery status."""
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+    lead.drafted_email_json = None
+    lead.date_email_sent = None
+    lead.delivery_status = "Pending"
+    lead.gmail_thread_id = None
+    lead.status = "Identified"
+    lead.updated_at = datetime.utcnow()
+    db.commit()
+    _logger.info(f"Lead {lead_id} ({lead.name}) campaign reset")
+    return {"success": True}
+
+
+@router.post("/reset-batch")
+async def reset_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
+    """Reset multiple leads for re-sending (campaign wizard reset)."""
+    reset_count = 0
+    for lid_str in data.lead_ids:
+        try:
+            lid = UUID(lid_str)
+        except ValueError:
+            continue
+        lead = db_svc.get_lead(db, lid)
+        if not lead:
+            continue
+        lead.drafted_email_json = None
+        lead.date_email_sent = None
+        lead.delivery_status = "Pending"
+        lead.gmail_thread_id = None
+        lead.status = "Identified"
+        lead.updated_at = datetime.utcnow()
+        reset_count += 1
+    db.commit()
+    _logger.info(f"Batch reset: {reset_count} leads")
+    return {"success": True, "reset": reset_count}
 
 
 # ─── Single Send ──────────────────────────────────────────────
