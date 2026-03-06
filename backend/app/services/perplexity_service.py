@@ -246,40 +246,73 @@ def _eu_location(region: str = "") -> dict:
 
 # ─── 1) Find Companies — DEEP RESEARCH with multi-source ────────
 
-async def find_companies(industry_value: str, region_countries: str, api_key: str) -> list[dict]:
+async def find_companies(
+    industry_value: str,
+    region_countries: str,
+    api_key: str,
+    size_filter: str = "",
+) -> list[dict]:
     """Use sonar-pro with domain-filtered search across business directories,
-    company databases, and LinkedIn. Two passes: structured + supplementary."""
+    company databases, and LinkedIn. Two passes:
+    1) Major players + compliance-relevant companies
+    2) Hidden Champions supplement
+    size_filter: optional, e.g. '5001+', '201-5000', '0-200' to constrain employee count."""
 
-    system = """You are a B2B company research assistant specializing in European enterprise companies.
+    # Build dynamic size constraint for the prompt
+    if "5001" in size_filter or "5.001" in size_filter:
+        size_constraint = "ONLY companies with MORE THAN 5,000 employees."
+    elif "201" in size_filter:
+        size_constraint = "ONLY mid-size companies with 201–5,000 employees (Mittelstand / Hidden Champions)."
+    elif "0-200" in size_filter:
+        size_constraint = "ONLY small companies with up to 200 employees (startups, niche players)."
+    else:
+        size_constraint = "Any size — from large corporates to Mittelstand Hidden Champions."
+
+    system = f"""You are a B2B company research assistant specializing in European enterprise companies and their regulatory compliance landscape.
 You MUST return EXACTLY 25 real companies as a JSON array.
 Each object MUST have: name, industry, region, website, linkedInURL, description, size, country, employees, nace_code, founded_year, revenue_range, key_regulations.
+
 CRITICAL RULES:
 - Return ONLY valid JSON. No markdown, no explanation.
 - All 25 companies must be REAL, currently operating.
 - Full website URL (https://...) and LinkedIn company page URL.
-- "employees" = realistic integer (e.g. 150, 3500, 85000). NEVER 0.
-- "nace_code" = the company's NACE/SIC industry code if known.
-- "founded_year" = year founded.
-- "revenue_range" = approximate revenue range (e.g. "100M-500M EUR").
-- "key_regulations" = comma-separated list of regulations that apply (e.g. "DORA, NIS2, GDPR, MiCA, PSD2").
-- Include a MIX of large enterprises AND mid-cap companies (200-5000 employees).
-- Prioritize companies with active compliance/regulatory needs."""
+- "employees" = realistic integer. Research the ACTUAL current number. NEVER use 0.
+- "key_regulations" = specific regulations that apply (e.g. "DORA, NIS2, GDPR, MiCA, PSD2, CSRD, EU AI Act, AML6, AMLD").
+- "revenue_range" = approximate revenue (e.g. "500M-1B EUR", "10B+ EUR").
+
+EMPLOYEE SIZE FILTER: {size_constraint}
+
+PRIORITY ORDER — rank by COMPLIANCE RELEVANCE, not by company size:
+1. Companies in HIGHLY REGULATED sub-sectors (financial services subsidiaries, chemicals, pharma, defense, critical infrastructure, energy)
+2. Companies facing IMMINENT regulatory deadlines or known compliance challenges
+3. Companies recently fined or under regulatory scrutiny
+4. Obvious major players that EVERYONE knows in this industry (e.g. for Manufacturing/DACH: Volkswagen, BMW, Mercedes-Benz, Porsche, Siemens, Bosch, ThyssenKrupp — do NOT omit these)
+5. Hidden Champions — lesser-known but highly regulated mid-size firms (Mittelstand world market leaders, SDAX/MDAX-listed, specialized manufacturers subject to export controls, REACH, dual-use regulations, etc.)
+
+IMPORTANT:
+- Do NOT skip obvious household-name companies that belong to this industry. If someone would say "you forgot VW" — that means VW must be in the list.
+- BUT ALSO include non-obvious Hidden Champions that have strong compliance needs.
+- Aim for roughly: 60% well-known companies + 40% Hidden Champions / lesser-known but compliance-relevant firms."""
 
     user = f"""Find exactly 25 real {industry_value} companies in {region_countries}.
-Requirements:
-- Revenue > 50M EUR or equivalent
-- 200+ employees
-- Currently active and operating
-- Strong compliance/regulatory relevance (subject to EU regulations like DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act)
-- Include full website URL and LinkedIn company page URL
-- Include approximate number of employees as integer
-- Include which regulations apply to each company
-Search business registries, financial databases, LinkedIn, industry reports, annual reports.
-Return ALL 25 as a single JSON array. Count them before returning."""
+
+Employee filter: {size_constraint}
+
+Search strategy:
+1. Start with the OBVIOUS major players in {industry_value} in {region_countries}. Do not skip any company that a professional in this industry would immediately name.
+2. Then add HIDDEN CHAMPIONS — lesser-known companies with high compliance relevance:
+   - Companies subject to strict EU regulations (DORA, NIS2, CSRD, REACH, dual-use export controls, GDPR special categories)
+   - Companies recently in regulatory news (fines, audits, new compliance requirements)
+   - Mittelstand world market leaders in regulated niches
+   - Companies in critical infrastructure or supply chain security scope
+3. For each company, list which specific regulations apply to them.
+
+Search stock indices (DAX, MDAX, SDAX, SMI, ATX), Handelsregister, Mittelstand rankings, BaFin/EBA regulated entity lists, LinkedIn, Crunchbase, industry associations.
+Return ALL 25 as a single JSON array."""
 
     location = _eu_location(region_countries)
 
-    # Pass 1: Business directories + company databases
+    # Pass 1: Major players + regulated companies
     content1 = await _call_api(
         system, user, api_key,
         max_tokens=8000,
@@ -291,40 +324,48 @@ Return ALL 25 as a single JSON array. Count them before returning."""
     )
     raw1 = _parse_json_array(content1 if isinstance(content1, str) else content1.get("content", ""))
 
-    # Pass 2: If < 20 results, supplement with unrestricted search
-    if len(raw1) < 20:
-        system2 = """You are a B2B company research assistant. Return additional real companies as JSON array.
-Each object: name, industry, region, website, linkedInURL, description, size, country, employees, nace_code, key_regulations.
+    # Pass 2: Hidden Champions supplement — specifically search for lesser-known regulated firms
+    system2 = f"""You are a compliance-focused company researcher. Find HIDDEN CHAMPIONS — lesser-known but highly regulated companies.
+Focus on: Mittelstand world market leaders, SDAX-listed firms, companies subject to export controls, REACH, dual-use regulations, critical infrastructure (NIS2 scope), or sector-specific compliance.
+Return a JSON array. Each object: name, industry, region, website, linkedInURL, description, size, country, employees, nace_code, key_regulations.
+Employee filter: {size_constraint}
 Return ONLY valid JSON."""
 
-        already_found = ", ".join(d.get("name", "") for d in raw1[:25])
-        user2 = f"""Find {25 - len(raw1)} MORE {industry_value} companies in {region_countries}.
-EXCLUDE these already found: {already_found}
-Requirements: Revenue > 50M EUR, 200+ employees, active, compliance-relevant.
-Search LinkedIn, Crunchbase, company websites, financial databases, annual reports, industry directories.
+    already_found = ", ".join(d.get("name", "") for d in raw1[:30])
+    need = max(25 - len(raw1), 5)  # always look for at least 5 more
+    user2 = f"""Find {need} MORE {industry_value} companies in {region_countries} that are NOT in this list: {already_found}
+
+Focus on HIDDEN CHAMPIONS and lesser-known companies with HIGH compliance relevance:
+- Mittelstand firms with world-market-leading positions in regulated niches
+- Companies newly in scope of NIS2, CSRD, or EU AI Act
+- Manufacturers subject to REACH, dual-use export controls, or defense procurement rules
+- Companies recently in BaFin/regulatory news
+- Family-owned enterprises with complex compliance needs (anti-money laundering, supply chain due diligence, Lieferkettengesetz)
+
+Search Mittelstand rankings, SDAX listings, industry association member lists, BaFin regulated entity registers, Handelsregister.
 Return JSON array."""
 
-        try:
-            content2 = await _call_api(
-                system2, user2, api_key,
-                max_tokens=6000,
-                model=MODEL_FAST,
-                search_recency_filter="year",
-                search_language_filter=["en", "de"],
-                user_location=location,
-                search_context_size="high",
-            )
-            raw2 = _parse_json_array(content2 if isinstance(content2, str) else content2.get("content", ""))
-            existing_names = {d.get("name", "").lower() for d in raw1}
-            for item in raw2:
-                if item.get("name", "").lower() not in existing_names:
-                    raw1.append(item)
-        except Exception:
-            pass
+    try:
+        content2 = await _call_api(
+            system2, user2, api_key,
+            max_tokens=6000,
+            model=MODEL_FAST,
+            search_recency_filter="year",
+            search_language_filter=["en", "de"],
+            user_location=location,
+            search_context_size="high",
+        )
+        raw2 = _parse_json_array(content2 if isinstance(content2, str) else content2.get("content", ""))
+        existing_names = {d.get("name", "").lower() for d in raw1}
+        for item in raw2:
+            if item.get("name", "").lower() not in existing_names:
+                raw1.append(item)
+    except Exception:
+        pass
 
     # Normalize results
     companies = []
-    for d in raw1[:30]:
+    for d in raw1[:35]:  # allow a few extra, prospecting.py filters by size
         emp_raw = d.get("employees", "0")
         emp_cleaned = str(emp_raw).replace(",", "").replace(".", "").strip()
         try:

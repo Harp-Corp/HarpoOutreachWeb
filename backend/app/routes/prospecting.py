@@ -54,7 +54,9 @@ async def find_companies(
     for ind in resolved_industries:
         for reg in resolved_regions:
             try:
-                companies_raw = await pplx.find_companies(ind.value, reg.countries, api_key)
+                # Pass size filter to Perplexity so the prompt targets the right companies
+                size_hint = ",".join(sizes) if sizes else ""
+                companies_raw = await pplx.find_companies(ind.value, reg.countries, api_key, size_filter=size_hint)
                 for c in companies_raw:
                     if db_svc.company_exists(db, c["name"]):
                         continue
@@ -218,3 +220,4 @@ async def verify_all_emails(db: Session = Depends(get_db)):
         "total": len(unverified),
         "errors": errors[:5] if errors else [],
     }
+
