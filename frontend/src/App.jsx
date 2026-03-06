@@ -207,7 +207,25 @@ function App() {
   const deletePost = async (postId) => {
     try { await fetchJson(`${API}/data/social-posts/${postId}`, { method: 'DELETE' }); await loadPosts() } catch (e) { setError(e.message) }
   }
+  const copyPost = async (postId, content) => {
+    navigator.clipboard.writeText(content)
+    try { await fetchJson(`${API}/data/social-posts/${postId}/mark-copied`, { method: 'POST' }); await loadPosts() } catch {}
+    showSuccess('Kopiert')
+  }
   const exportCSV = (type) => window.open(`${API}/data/${type}/export`, '_blank')
+
+  const renderPostContent = (text) => {
+    if (!text) return ''
+    // Escape HTML first
+    const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // Convert URLs to clickable links
+    const withLinks = escaped.replace(
+      /(https?:\/\/[^\s)<>]+)/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer" class="post-link">$1</a>'
+    )
+    // Convert line breaks to <br>
+    return withLinks.replace(/\n/g, '<br/>')
+  }
 
   const statusBadge = (status) => {
     const c = { 'Identified':'badge-gray','Email Verified':'badge-green','Email Drafted':'badge-yellow','Email Approved':'badge-blue','Email Sent':'badge-green','Replied':'badge-green','Follow-Up Drafted':'badge-yellow','Follow-Up Sent':'badge-green','Do Not Contact':'badge-red','Closed':'badge-gray' }
@@ -513,14 +531,18 @@ function App() {
             </div>
             <div className="card"><h2>Posts ({posts.length})</h2>
               {posts.map(p => (
-                <div key={p.id} className="post-item">
-                  <div className="post-header"><span className="badge badge-blue">{p.platform}</span>
+                <div key={p.id} className={`post-item ${p.is_copied ? 'post-copied' : ''}`}>
+                  <div className="post-header">
+                    <div style={{display:'flex',gap:'0.375rem',alignItems:'center'}}>
+                      <span className="badge badge-blue">{p.platform}</span>
+                      {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
+                    </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
-                      <button className="btn btn-ghost btn-sm" onClick={() => { navigator.clipboard.writeText(p.content); showSuccess('Kopiert') }}>Kopieren</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => copyPost(p.id, p.content)}>{p.is_copied ? 'Erneut kopieren' : 'Kopieren'}</button>
                       <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>
                     </div>
                   </div>
-                  <p className="post-content">{p.content}</p>
+                  <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
                 </div>
               ))}{posts.length === 0 && <p className="empty">Noch keine Posts.</p>}
             </div>
@@ -555,4 +577,5 @@ function App() {
 }
 
 export default App
+
 

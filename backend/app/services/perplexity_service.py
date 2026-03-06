@@ -209,6 +209,60 @@ def _strip_citations(text: str) -> str:
     return re.sub(r"\s*\[\d+(?:,\s*\d+)*\]", "", text).strip()
 
 
+def _resolve_citations(text: str, citations: list[str]) -> str:
+    """Replace [1], [2] etc. markers with actual URLs from Perplexity citations array.
+    Produces readable inline links like: [Source Title](URL)"""
+    if not citations:
+        return text
+
+    def _domain_label(url: str) -> str:
+        """Extract a readable label from a URL."""
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).hostname or url
+            host = host.replace("www.", "")
+            # Map known domains to readable names
+            domain_names = {
+                "eba.europa.eu": "EBA",
+                "esma.europa.eu": "ESMA",
+                "ecb.europa.eu": "ECB",
+                "bafin.de": "BaFin",
+                "eur-lex.europa.eu": "EUR-Lex",
+                "european-commission.europa.eu": "European Commission",
+                "ec.europa.eu": "European Commission",
+                "ft.com": "Financial Times",
+                "reuters.com": "Reuters",
+                "handelsblatt.com": "Handelsblatt",
+                "fca.org.uk": "FCA",
+                "consilium.europa.eu": "EU Council",
+                "europarl.europa.eu": "EU Parliament",
+            }
+            for domain, name in domain_names.items():
+                if domain in host:
+                    return name
+            # Fallback: use domain without TLD
+            parts = host.split(".")
+            return parts[0].capitalize() if parts else host
+        except Exception:
+            return "Source"
+
+    # Replace [N] markers with linked source
+    def replacer(match: re.Match) -> str:
+        nums_str = match.group(1)  # e.g. "1" or "1, 2"
+        nums = [int(n.strip()) for n in nums_str.split(",") if n.strip().isdigit()]
+        links = []
+        for n in nums:
+            idx = n - 1  # citations are 0-indexed
+            if 0 <= idx < len(citations):
+                url = citations[idx]
+                label = _domain_label(url)
+                links.append(f"{label} ({url})")
+        return " [" + ", ".join(links) + "]" if links else match.group(0)
+
+    resolved = re.sub(r"\[(\d+(?:,\s*\d+)*)\]", replacer, text)
+    return resolved
+
+
 def _normalize_name(name: str) -> str:
     n = name.lower().strip()
     for prefix in ["dr. ", "dr ", "prof. ", "prof "]:
@@ -1018,7 +1072,7 @@ async def generate_social_post(
 comply.reg: RegTech SaaS for automated compliance monitoring, regulatory change management, risk assessment.
 
 MANDATORY RULES:
-1. LANGUAGE: Write ENTIRELY in English.
+1. LANGUAGE: Write ENTIRELY in English with CORRECT capitalisation (proper nouns, sentence beginnings, acronyms). This is an official corporate post — do NOT write in all-lowercase.
 2. GEOGRAPHIC FOCUS: ALL content MUST focus on EUROPE (EU, EEA, UK, Switzerland). Do NOT reference US, SEC, or non-European regulators unless comparing to EU rules.
 3. CURRENCY: ALL monetary values MUST be in EUR (€). Convert any USD or GBP figures to EUR.
 4. FACTS: Every post MUST have 1-2 concrete numbers/statistics with explicit source citation in the text (e.g. "According to EBA's 2025 Annual Report", "Source: European Commission, March 2026"). Raw numbers without sources are NOT acceptable.
@@ -1030,6 +1084,7 @@ MANDATORY RULES:
 10. VALUE: Genuine insight for European compliance professionals.
 11. TIMELINESS: Reference recent EU regulatory developments, ECB/EBA/ESMA/BaFin publications.
 12. EUROPEAN REGULATIONS ONLY: Focus on DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, PSD2/PSD3, AML6/AMLD, EBA Guidelines, Lieferkettengesetz/CSDDD.
+13. CAPITALISATION: Use STANDARD English capitalisation. Capitalise: first word of each sentence, proper nouns (European Commission, BaFin, DORA), acronyms, titles. Do NOT write everything in lowercase.
 Return JSON: {{"content": "...", "hashtags": [...], "sources": ["Source Name (URL)"]}}"""
 
     industry_context = ", ".join(industries) if industries else "Financial Services, RegTech, Compliance"
@@ -1038,7 +1093,7 @@ Return JSON: {{"content": "...", "hashtags": [...], "sources": ["Source Name (UR
 Topic: {topic} - {topic_prefix} {industry_context}
 
 REQUIREMENTS:
-- Write in English
+- Write in English with CORRECT capitalisation (this is a professional corporate post, NOT casual text)
 - ALL content focused on EUROPE (EU, EEA, UK, Switzerland) — no US/SEC references
 - ALL monetary amounts in EUR (€)
 - Hook in line 1 (number or provocative thesis)
@@ -1075,26 +1130,40 @@ Return ONLY valid JSON with content, hashtags, AND sources array."""
         hashtag_line = " ".join(
             h if h.startswith("#") else f"#{h}" for h in hashtags
         )
-        full = strip_trailing_hashtags(raw_content)
 
-        # Append sources section if available (from post or Perplexity citations)
-        source_lines = []
-        if post_sources:
-            source_lines = post_sources[:5]
-        elif citations:
-            source_lines = [c for c in citations[:5]]
-        if source_lines:
-            full += "\n\nQuellen: " + " | ".join(str(s) for s in source_lines)
+        # Resolve [1], [2] citation markers to actual URLs
+        full = _resolve_citations(raw_content, citations)
+        full = strip_trailing_hashtags(full)
+
+        # Build sources section with clickable links
+        source_urls = []
+        if citations:
+            source_urls = citations[:8]
+        # Deduplicate and format
+        seen_domains = set()
+        source_entries = []
+        for url in source_urls:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).hostname or ""
+                domain = domain.replace("www.", "")
+            except Exception:
+                domain = url
+            if domain not in seen_domains:
+                seen_domains.add(domain)
+                source_entries.append(url)
+        if source_entries:
+            full += "\n\nQuellen:\n" + "\n".join(f"\u2022 {url}" for url in source_entries[:5])
 
         if hashtag_line:
             full += "\n\n" + hashtag_line
         full = ensure_footer(full)
         return {"content": full, "hashtags": hashtags}
     except json.JSONDecodeError:
-        # Fallback: append Perplexity citations if available
-        fallback = raw
+        # Fallback: resolve citations and append
+        fallback = _resolve_citations(raw, citations)
         if citations:
-            fallback += "\n\nQuellen: " + " | ".join(str(c) for c in citations[:5])
+            fallback += "\n\nQuellen:\n" + "\n".join(f"\u2022 {url}" for url in citations[:5])
         return {"content": ensure_footer(fallback), "hashtags": []}
 
 
@@ -1133,4 +1202,5 @@ Generate 3 compelling subject lines."""
         if line.strip() and 5 < len(line.strip()) < 100
     ]
     return subjects or [f"Compliance Partnership Opportunity - {company_name}"]
+
 

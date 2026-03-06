@@ -314,18 +314,32 @@ def address_book_to_response(entry: AddressBookDB) -> dict:
 
 def save_social_post(db: Session, data: dict) -> SocialPostDB:
     post_id = data.get("id", uuid4())
-    obj = SocialPostDB(
-        id=post_id,
-        platform=data.get("platform", "LinkedIn"),
-        content=data.get("content", ""),
-        hashtags_json=json.dumps(data.get("hashtags", [])),
-        created_date=data.get("created_date", datetime.utcnow()),
-        is_published=data.get("is_published", False),
-        updated_at=datetime.utcnow(),
-    )
-    db.merge(obj)
-    db.commit()
-    return obj
+    existing = db.get(SocialPostDB, post_id)
+    if existing:
+        for k in ("platform", "content", "is_published", "is_copied"):
+            if k in data:
+                setattr(existing, k, data[k])
+        if "hashtags" in data:
+            existing.hashtags_json = json.dumps(data["hashtags"])
+        existing.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(existing)
+        return existing
+    else:
+        obj = SocialPostDB(
+            id=post_id,
+            platform=data.get("platform", "LinkedIn"),
+            content=data.get("content", ""),
+            hashtags_json=json.dumps(data.get("hashtags", [])),
+            created_date=data.get("created_date", datetime.utcnow()),
+            is_published=data.get("is_published", False),
+            is_copied=data.get("is_copied", False),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(obj)
+        db.commit()
+        db.refresh(obj)
+        return obj
 
 
 def load_social_posts(db: Session) -> list[SocialPostDB]:
@@ -352,6 +366,7 @@ def social_post_to_response(post: SocialPostDB) -> dict:
         "hashtags": hashtags,
         "created_date": post.created_date.isoformat() if post.created_date else None,
         "is_published": post.is_published,
+        "is_copied": getattr(post, "is_copied", False) or False,
     }
 
 
@@ -442,4 +457,5 @@ def get_dashboard_stats(db: Session) -> dict:
         "leads_by_industry": by_industry,
         "address_book_count": ab_count,
     }
+
 

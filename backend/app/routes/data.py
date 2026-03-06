@@ -195,6 +195,13 @@ async def remove_social_post(post_id: UUID, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+@router.post("/social-posts/{post_id}/mark-copied")
+async def mark_post_copied(post_id: UUID, db: Session = Depends(get_db)):
+    """Mark a social post as copied (to prevent duplicate usage)."""
+    obj = db_svc.save_social_post(db, {"id": post_id, "is_copied": True})
+    return {"success": True, "data": db_svc.social_post_to_response(obj)}
+
+
 # ─── Address Book ─────────────────────────────────────────────────
 
 @router.get("/address-book")
@@ -361,4 +368,5 @@ async def update_settings(data: dict, db: Session = Depends(get_db)):
 async def dashboard(db: Session = Depends(get_db)):
     stats = db_svc.get_dashboard_stats(db)
     return {"data": stats}
+
 

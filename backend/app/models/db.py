@@ -123,6 +123,7 @@ class SocialPostDB(Base):
     hashtags_json = Column(Text, nullable=False, default="[]")
     created_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     is_published = Column(Boolean, nullable=False, default=False)
+    is_copied = Column(Boolean, nullable=False, default=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -164,6 +165,13 @@ def init_db():
                 conn.execute(text(
                     "ALTER TABLE address_book ADD COLUMN contact_status VARCHAR NOT NULL DEFAULT 'active'"
                 ))
+    if "social_posts" in insp.get_table_names():
+        cols = [c["name"] for c in insp.get_columns("social_posts")]
+        if "is_copied" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE social_posts ADD COLUMN is_copied BOOLEAN NOT NULL DEFAULT false"
+                ))
 
 
 def get_db():
@@ -173,4 +181,5 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
