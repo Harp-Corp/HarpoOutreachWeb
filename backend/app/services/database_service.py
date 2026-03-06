@@ -1,0 +1,367 @@
+# Database helper functions – wraps SQLAlchemy ORM operations
+# Ported from DatabaseService.swift
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Optional
+from uuid import UUID, uuid4
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ..models.db import (
+    BlocklistDB,
+    CompanyDB,
+    LeadDB,
+    SettingsDB,
+    SocialPostDB,
+)
+from ..models.schemas import (
+    CompanyResponse,
+    DeliveryStatus,
+    LeadResponse,
+    LeadStatus,
+    OutboundEmail,
+    SocialPostResponse,
+)
+
+
+# ─── Companies ────────────────────────────────────────────────────
+
+def save_company(db: Session, data: dict) -> CompanyDB:
+    company_id = data.get("id", uuid4())
+    existing = db.get(CompanyDB, company_id)
+    if existing:
+        for k, v in data.items():
+            if k != "id" and hasattr(existing, k):
+                setattr(existing, k, v)
+        existing.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(existing)
+        return existing
+    else:
+        obj = CompanyDB(id=company_id, **{k: v for k, v in data.items() if k != "id"})
+        obj.updated_at = datetime.utcnow()
+        db.add(obj)
+        db.commit()
+        db.refresh(obj)
+        return obj
+
+
+def save_companies(db: Session, companies: list[dict]) -> int:
+    count = 0
+    for c in companies:
+        save_company(db, c)
+        count += 1
+    return count
+
+
+def load_companies(db: Session) -> list[CompanyDB]:
+    return db.query(CompanyDB).order_by(CompanyDB.name).all()
+
+
+def delete_company(db: Session, company_id: UUID):
+    obj = db.get(CompanyDB, company_id)
+    if obj:
+        db.delete(obj)
+        db.commit()
+
+
+def company_exists(db: Session, name: str) -> bool:
+    return db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).count() > 0
+
+
+def get_company_by_name(db: Session, name: str) -> Optional[CompanyDB]:
+    return db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).first()
+
+
+# ─── Leads ────────────────────────────────────────────────────────
+
+def _lead_to_db(lead_id: UUID, data: dict) -> dict:
+    """Map Pydantic/dict fields to DB column names."""
+    result = {"id": lead_id}
+    field_map = {
+        "name": "name",
+        "title": "title",
+        "company": "company",
+        "email": "email",
+        "email_verified": "email_verified",
+        "linkedin_url": "linkedin_url",
+        "phone": "phone",
+        "responsibility": "responsibility",
+        "status": "status",
+        "source": "source",
+        "verification_notes": "verification_notes",
+        "date_identified": "date_identified",
+        "date_email_sent": "date_email_sent",
+        "date_follow_up_sent": "date_follow_up_sent",
+        "reply_received": "reply_received",
+        "is_manually_created": "is_manually_created",
+        "scheduled_send_date": "scheduled_send_date",
+        "opted_out": "opted_out",
+        "opt_out_date": "opt_out_date",
+        "delivery_status": "delivery_status",
+    }
+    for src, dst in field_map.items():
+        if src in data:
+            val = data[src]
+            if src == "status" and isinstance(val, LeadStatus):
+                val = val.value
+            elif src == "delivery_status" and isinstance(val, DeliveryStatus):
+                val = val.value
+            result[dst] = val
+
+    # JSON-encoded email drafts
+    if "drafted_email" in data and data["drafted_email"]:
+        de = data["drafted_email"]
+        if isinstance(de, OutboundEmail):
+            result["drafted_email_json"] = de.model_dump_json()
+        elif isinstance(de, dict):
+            result["drafted_email_json"] = json.dumps(de)
+    if "follow_up_email" in data and data["follow_up_email"]:
+        fu = data["follow_up_email"]
+        if isinstance(fu, OutboundEmail):
+            result["follow_up_email_json"] = fu.model_dump_json()
+        elif isinstance(fu, dict):
+            result["follow_up_email_json"] = json.dumps(fu)
+
+    return result
+
+
+def save_lead(db: Session, data: dict) -> LeadDB:
+    lead_id = data.get("id", uuid4())
+    existing = db.get(LeadDB, lead_id)
+    mapped = _lead_to_db(lead_id, data)
+
+    if existing:
+        for k, v in mapped.items():
+            if k != "id" and hasattr(existing, k):
+                setattr(existing, k, v)
+        existing.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(existing)
+        return existing
+    else:
+        obj = LeadDB(**{k: v for k, v in mapped.items()})
+        obj.updated_at = datetime.utcnow()
+        db.add(obj)
+        db.commit()
+        db.refresh(obj)
+        return obj
+
+
+def load_leads(db: Session) -> list[LeadDB]:
+    return db.query(LeadDB).order_by(LeadDB.date_identified.desc()).all()
+
+
+def get_lead(db: Session, lead_id: UUID) -> Optional[LeadDB]:
+    return db.get(LeadDB, lead_id)
+
+
+def delete_lead(db: Session, lead_id: UUID):
+    obj = db.get(LeadDB, lead_id)
+    if obj:
+        db.delete(obj)
+        db.commit()
+
+
+def lead_exists(db: Session, name: str, company: str) -> bool:
+    return (
+        db.query(LeadDB)
+        .filter(func.lower(LeadDB.name) == name.lower(), func.lower(LeadDB.company) == company.lower())
+        .count()
+        > 0
+    )
+
+
+def lead_exists_by_email(db: Session, email: str) -> bool:
+    norm = email.lower().strip()
+    return db.query(LeadDB).filter(func.lower(LeadDB.email) == norm).count() > 0
+
+
+def lead_db_to_response(lead: LeadDB) -> dict:
+    """Convert LeadDB ORM object to a response dict."""
+    drafted = None
+    if lead.drafted_email_json:
+        try:
+            drafted = json.loads(lead.drafted_email_json)
+        except Exception:
+            pass
+    follow_up = None
+    if lead.follow_up_email_json:
+        try:
+            follow_up = json.loads(lead.follow_up_email_json)
+        except Exception:
+            pass
+    return {
+        "id": str(lead.id),
+        "name": lead.name,
+        "title": lead.title,
+        "company": lead.company,
+        "email": lead.email,
+        "email_verified": lead.email_verified,
+        "linkedin_url": lead.linkedin_url,
+        "phone": lead.phone,
+        "responsibility": lead.responsibility,
+        "status": lead.status,
+        "source": lead.source,
+        "verification_notes": lead.verification_notes,
+        "drafted_email": drafted,
+        "follow_up_email": follow_up,
+        "date_identified": lead.date_identified.isoformat() if lead.date_identified else None,
+        "date_email_sent": lead.date_email_sent.isoformat() if lead.date_email_sent else None,
+        "date_follow_up_sent": lead.date_follow_up_sent.isoformat() if lead.date_follow_up_sent else None,
+        "reply_received": lead.reply_received,
+        "is_manually_created": lead.is_manually_created,
+        "scheduled_send_date": lead.scheduled_send_date.isoformat() if lead.scheduled_send_date else None,
+        "opted_out": lead.opted_out,
+        "opt_out_date": lead.opt_out_date.isoformat() if lead.opt_out_date else None,
+        "delivery_status": lead.delivery_status,
+    }
+
+
+def company_db_to_response(company: CompanyDB) -> dict:
+    return {
+        "id": str(company.id),
+        "name": company.name,
+        "industry": company.industry,
+        "region": company.region,
+        "website": company.website,
+        "linkedin_url": company.linkedin_url,
+        "description": company.description,
+        "size": company.size,
+        "country": company.country,
+        "nace_code": company.nace_code,
+        "employee_count": company.employee_count,
+    }
+
+
+# ─── Social Posts ─────────────────────────────────────────────────
+
+def save_social_post(db: Session, data: dict) -> SocialPostDB:
+    post_id = data.get("id", uuid4())
+    obj = SocialPostDB(
+        id=post_id,
+        platform=data.get("platform", "LinkedIn"),
+        content=data.get("content", ""),
+        hashtags_json=json.dumps(data.get("hashtags", [])),
+        created_date=data.get("created_date", datetime.utcnow()),
+        is_published=data.get("is_published", False),
+        updated_at=datetime.utcnow(),
+    )
+    db.merge(obj)
+    db.commit()
+    return obj
+
+
+def load_social_posts(db: Session) -> list[SocialPostDB]:
+    return db.query(SocialPostDB).order_by(SocialPostDB.created_date.desc()).all()
+
+
+def delete_social_post(db: Session, post_id: UUID):
+    obj = db.get(SocialPostDB, post_id)
+    if obj:
+        db.delete(obj)
+        db.commit()
+
+
+def social_post_to_response(post: SocialPostDB) -> dict:
+    hashtags = []
+    try:
+        hashtags = json.loads(post.hashtags_json)
+    except Exception:
+        pass
+    return {
+        "id": str(post.id),
+        "platform": post.platform,
+        "content": post.content,
+        "hashtags": hashtags,
+        "created_date": post.created_date.isoformat() if post.created_date else None,
+        "is_published": post.is_published,
+    }
+
+
+# ─── Blocklist ────────────────────────────────────────────────────
+
+def add_to_blocklist(db: Session, email: str, reason: str = ""):
+    norm = email.lower().strip()
+    obj = BlocklistDB(email=norm, reason=reason, opted_out_at=datetime.utcnow())
+    db.merge(obj)
+    db.commit()
+
+
+def is_blocked(db: Session, email: str) -> bool:
+    norm = email.lower().strip()
+    return db.query(BlocklistDB).filter(BlocklistDB.email == norm).count() > 0
+
+
+def load_blocklist(db: Session) -> list[BlocklistDB]:
+    return db.query(BlocklistDB).order_by(BlocklistDB.opted_out_at.desc()).all()
+
+
+def remove_from_blocklist(db: Session, email: str):
+    norm = email.lower().strip()
+    obj = db.query(BlocklistDB).filter(BlocklistDB.email == norm).first()
+    if obj:
+        db.delete(obj)
+        db.commit()
+
+
+# ─── Settings ─────────────────────────────────────────────────────
+
+def get_setting(db: Session, key: str, default: str = "") -> str:
+    obj = db.get(SettingsDB, key)
+    if obj:
+        try:
+            return json.loads(obj.value_json)
+        except Exception:
+            return obj.value_json
+    return default
+
+
+def set_setting(db: Session, key: str, value):
+    obj = SettingsDB(key=key, value_json=json.dumps(value))
+    db.merge(obj)
+    db.commit()
+
+
+def get_all_settings(db: Session) -> dict:
+    rows = db.query(SettingsDB).all()
+    result = {}
+    for r in rows:
+        try:
+            result[r.key] = json.loads(r.value_json)
+        except Exception:
+            result[r.key] = r.value_json
+    return result
+
+
+# ─── Dashboard Stats ─────────────────────────────────────────────
+
+def get_dashboard_stats(db: Session) -> dict:
+    leads = db.query(LeadDB).all()
+    total = len(leads)
+    sent = sum(1 for l in leads if l.date_email_sent is not None)
+    replied = sum(1 for l in leads if l.reply_received and l.reply_received.strip())
+    rate = (replied / sent * 100) if sent > 0 else 0.0
+
+    by_status: dict[str, int] = {}
+    by_industry: dict[str, int] = {}  # approximate via company lookup
+    for l in leads:
+        by_status[l.status] = by_status.get(l.status, 0) + 1
+
+    companies = db.query(CompanyDB).all()
+    company_industry = {c.name.lower(): c.industry for c in companies}
+    for l in leads:
+        ind = company_industry.get(l.company.lower(), "Unknown")
+        by_industry[ind] = by_industry.get(ind, 0) + 1
+
+    return {
+        "total_leads": total,
+        "emails_sent": sent,
+        "replies_received": replied,
+        "conversion_rate": round(rate, 1),
+        "leads_by_status": by_status,
+        "leads_by_industry": by_industry,
+    }

@@ -1,0 +1,47 @@
+# ─── HarpoOutreach Web – Docker Compose ────────────────
+# Starts: PostgreSQL + FastAPI Backend + React Frontend
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: harpo
+      POSTGRES_USER: harpo
+      POSTGRES_PASSWORD: harpo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harpo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://harpo:harpo@db:5432/harpo
+      FRONTEND_URL: http://localhost:3000
+      SECRET_KEY: ${SECRET_KEY:-harpo-secret-change-in-production}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/auth/google/callback}
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:

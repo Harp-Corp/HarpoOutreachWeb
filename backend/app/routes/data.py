@@ -1,0 +1,186 @@
+# Data routes – CRUD for companies, leads, social posts, settings, dashboard
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from ..models.db import get_db
+from ..services import database_service as db_svc
+from ..services import perplexity_service as pplx
+from ..models.schemas import ContentTopic, SocialPlatform
+
+router = APIRouter(prefix="/data", tags=["Data"])
+
+
+# ─── Companies ────────────────────────────────────────────────────
+
+@router.get("/companies")
+async def list_companies(db: Session = Depends(get_db)):
+    companies = db_svc.load_companies(db)
+    return {"data": [db_svc.company_db_to_response(c) for c in companies]}
+
+
+@router.post("/companies")
+async def create_company(data: dict, db: Session = Depends(get_db)):
+    data["id"] = uuid4()
+    obj = db_svc.save_company(db, data)
+    return {"success": True, "data": db_svc.company_db_to_response(obj)}
+
+
+@router.delete("/companies/{company_id}")
+async def remove_company(company_id: UUID, db: Session = Depends(get_db)):
+    db_svc.delete_company(db, company_id)
+    return {"success": True}
+
+
+# ─── Leads ────────────────────────────────────────────────────────
+
+@router.get("/leads")
+async def list_leads(db: Session = Depends(get_db)):
+    leads = db_svc.load_leads(db)
+    return {"data": [db_svc.lead_db_to_response(l) for l in leads]}
+
+
+@router.get("/leads/{lead_id}")
+async def get_lead(lead_id: UUID, db: Session = Depends(get_db)):
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+    return {"data": db_svc.lead_db_to_response(lead)}
+
+
+@router.post("/leads")
+async def create_lead(data: dict, db: Session = Depends(get_db)):
+    data["id"] = uuid4()
+    data["is_manually_created"] = True
+    obj = db_svc.save_lead(db, data)
+    return {"success": True, "data": db_svc.lead_db_to_response(obj)}
+
+
+@router.put("/leads/{lead_id}")
+async def update_lead(lead_id: UUID, data: dict, db: Session = Depends(get_db)):
+    data["id"] = lead_id
+    obj = db_svc.save_lead(db, data)
+    return {"success": True, "data": db_svc.lead_db_to_response(obj)}
+
+
+@router.delete("/leads/{lead_id}")
+async def remove_lead(lead_id: UUID, db: Session = Depends(get_db)):
+    db_svc.delete_lead(db, lead_id)
+    return {"success": True}
+
+
+# ─── Social Posts ─────────────────────────────────────────────────
+
+@router.get("/social-posts")
+async def list_social_posts(db: Session = Depends(get_db)):
+    posts = db_svc.load_social_posts(db)
+    return {"data": [db_svc.social_post_to_response(p) for p in posts]}
+
+
+@router.post("/social-posts/generate")
+async def generate_social_post(
+    topic: str,
+    platform: str = "LinkedIn",
+    industries: str = "",
+    db: Session = Depends(get_db),
+):
+    api_key = db_svc.get_setting(db, "perplexity_api_key")
+    if not api_key:
+        raise HTTPException(400, "Perplexity API Key fehlt.")
+
+    try:
+        ct = ContentTopic(topic)
+    except ValueError:
+        raise HTTPException(400, f"Unbekanntes Thema: {topic}")
+
+    try:
+        sp = SocialPlatform(platform)
+    except ValueError:
+        sp = SocialPlatform.linkedin
+
+    ind_list = [i.strip() for i in industries.split(",") if i.strip()] if industries else []
+
+    existing_posts = db_svc.load_social_posts(db)
+    previews = [p.content[:80] for p in existing_posts[:10]]
+
+    result = await pplx.generate_social_post(
+        ct.value, ct.prompt_prefix, sp.value, ind_list, previews, api_key
+    )
+
+    post_data = {
+        "id": uuid4(),
+        "platform": sp.value,
+        "content": result["content"],
+        "hashtags": result["hashtags"],
+        "created_date": datetime.utcnow(),
+        "is_published": False,
+    }
+    obj = db_svc.save_social_post(db, post_data)
+    return {"success": True, "data": db_svc.social_post_to_response(obj)}
+
+
+@router.delete("/social-posts/{post_id}")
+async def remove_social_post(post_id: UUID, db: Session = Depends(get_db)):
+    db_svc.delete_social_post(db, post_id)
+    return {"success": True}
+
+
+# ─── Blocklist ────────────────────────────────────────────────────
+
+@router.get("/blocklist")
+async def list_blocklist(db: Session = Depends(get_db)):
+    entries = db_svc.load_blocklist(db)
+    return {
+        "data": [
+            {"email": e.email, "reason": e.reason, "opted_out_at": e.opted_out_at.isoformat()}
+            for e in entries
+        ]
+    }
+
+
+@router.post("/blocklist")
+async def add_to_blocklist(email: str, reason: str = "", db: Session = Depends(get_db)):
+    db_svc.add_to_blocklist(db, email, reason)
+    return {"success": True}
+
+
+@router.delete("/blocklist/{email}")
+async def remove_from_blocklist(email: str, db: Session = Depends(get_db)):
+    db_svc.remove_from_blocklist(db, email)
+    return {"success": True}
+
+
+# ─── Settings ─────────────────────────────────────────────────────
+
+@router.get("/settings")
+async def get_settings(db: Session = Depends(get_db)):
+    all_settings = db_svc.get_all_settings(db)
+    # Mask sensitive keys
+    safe = {}
+    for k, v in all_settings.items():
+        if k in ("perplexity_api_key", "google_client_secret", "google_access_token", "google_refresh_token"):
+            safe[k] = "***" if v else ""
+        else:
+            safe[k] = v
+    return {"data": safe}
+
+
+@router.put("/settings")
+async def update_settings(data: dict, db: Session = Depends(get_db)):
+    for k, v in data.items():
+        if v is not None:
+            db_svc.set_setting(db, k, v)
+    return {"success": True}
+
+
+# ─── Dashboard ────────────────────────────────────────────────────
+
+@router.get("/dashboard")
+async def dashboard(db: Session = Depends(get_db)):
+    stats = db_svc.get_dashboard_stats(db)
+    return {"data": stats}
