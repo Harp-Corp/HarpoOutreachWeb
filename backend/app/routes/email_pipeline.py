@@ -22,11 +22,52 @@ router = APIRouter(prefix="/email", tags=["Email Pipeline"])
 
 
 def _get_access_token(db: Session) -> str:
-    """Get a valid Google access token (refresh if needed)."""
+    """Get a valid Google access token — auto-refresh if expired."""
     token = db_svc.get_setting(db, "google_access_token")
     if not token:
         raise HTTPException(401, "Nicht mit Google authentifiziert.")
-    # TODO: check expiry and refresh automatically
+
+    # Check expiry and refresh automatically
+    expiry = db_svc.get_setting(db, "google_token_expiry")
+    if expiry:
+        import time
+        try:
+            if float(expiry) < time.time() + 60:  # refresh 60s before actual expiry
+                refresh_tok = db_svc.get_setting(db, "google_refresh_token")
+                if not refresh_tok:
+                    raise HTTPException(401, "Token abgelaufen und kein Refresh-Token vorhanden. Bitte erneut mit Google verbinden.")
+                client_id = db_svc.get_setting(db, "google_client_id")
+                client_secret = db_svc.get_setting(db, "google_client_secret")
+                # Synchronous refresh via httpx
+                import httpx
+                resp = httpx.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "refresh_token": refresh_tok,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "grant_type": "refresh_token",
+                    },
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    new_token = data.get("access_token", "")
+                    if new_token:
+                        db_svc.set_setting(db, "google_access_token", new_token)
+                        db_svc.set_setting(db, "google_token_expiry",
+                                           time.time() + data.get("expires_in", 3600))
+                        if data.get("refresh_token"):
+                            db_svc.set_setting(db, "google_refresh_token", data["refresh_token"])
+                        return new_token
+                    else:
+                        raise HTTPException(401, "Token-Refresh lieferte kein neues Token.")
+                else:
+                    error_detail = resp.text[:200]
+                    raise HTTPException(401, f"Token-Refresh fehlgeschlagen ({resp.status_code}): {error_detail}")
+        except (ValueError, TypeError):
+            pass  # expiry value unparseable, try with existing token
+
     return token
 
 

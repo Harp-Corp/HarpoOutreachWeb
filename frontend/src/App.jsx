@@ -9,6 +9,8 @@ function App() {
   const [leads, setLeads] = useState([])
   const [posts, setPosts] = useState([])
   const [addressBook, setAddressBook] = useState([])
+  const [sentEmails, setSentEmails] = useState([])
+  const [analyticsSummary, setAnalyticsSummary] = useState(null)
   const [authStatus, setAuthStatus] = useState(null)
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
@@ -16,6 +18,9 @@ function App() {
   const [successMsg, setSuccessMsg] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
   const [abFilter, setAbFilter] = useState('all')
+  const [analyticsExpanded, setAnalyticsExpanded] = useState({})
+  const [checkingReplies, setCheckingReplies] = useState(false)
+  const [replyCheckResult, setReplyCheckResult] = useState(null)
 
   // Campaign wizard state
   const [campStep, setCampStep] = useState(1) // 1=select, 2=draft+edit, 3=approve, 4=send
@@ -67,6 +72,8 @@ function App() {
   const loadLeads = useCallback(async () => { try { const r = await fetchJson(`${API}/data/leads`); setLeads(r.data || []) } catch {} }, [])
   const loadPosts = useCallback(async () => { try { const r = await fetchJson(`${API}/data/social-posts`); setPosts(r.data || []) } catch {} }, [])
   const loadAddressBook = useCallback(async () => { try { const r = await fetchJson(`${API}/data/address-book`); setAddressBook(r.data || []) } catch {} }, [])
+  const loadSentEmails = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/sent-emails`); setSentEmails(r.data || []) } catch {} }, [])
+  const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
   const loadAuthStatus = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {} }, [])
 
   useEffect(() => { loadDashboard(); loadAuthStatus() }, [loadDashboard, loadAuthStatus])
@@ -76,6 +83,7 @@ function App() {
     else if (section === 'addressbook') { loadAddressBook() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads() }
     else if (section === 'social') { loadPosts() }
+    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
 
@@ -89,6 +97,20 @@ function App() {
   }, [section])
 
   const toggle = (arr, setArr, val) => setArr(prev => prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val])
+
+  // ─── Analytics Actions ─────────────────────────────────
+  const checkReplies = async () => {
+    setCheckingReplies(true); setReplyCheckResult(null); setError('')
+    try {
+      const r = await fetchJson(`${API}/analytics/check-replies`, { method: 'POST' })
+      setReplyCheckResult(r)
+      showSuccess(`Prüfung abgeschlossen: ${r.replies || 0} Antworten, ${r.unsubscribes || 0} Abmeldungen, ${r.bounces || 0} Bounces`)
+      await loadSentEmails()
+      await loadAnalyticsSummary()
+    } catch (e) { setError(e.message) }
+    setCheckingReplies(false)
+  }
+  const toggleAnalyticsRow = (id) => setAnalyticsExpanded(prev => ({ ...prev, [id]: !prev[id] }))
 
   // ─── Actions ────────────────────────────────────────────
   const findCompanies = async () => {
@@ -188,6 +210,24 @@ function App() {
     showSuccess('Kopiert')
   }
   const exportCSV = (type) => window.open(`${API}/data/${type}/export`, '_blank')
+
+  // Analytics actions
+  const checkReplies = async () => {
+    startLoading('Gmail wird auf Antworten geprüft...'); setError('')
+    try {
+      const r = await fetchJson(`${API}/analytics/check-replies`, { method: 'POST' })
+      const parts = []
+      if (r.replies > 0) parts.push(`${r.replies} Antwort${r.replies > 1 ? 'en' : ''}`)
+      if (r.unsubscribes > 0) parts.push(`${r.unsubscribes} Abmeldung${r.unsubscribes > 1 ? 'en' : ''}`)
+      if (r.bounces > 0) parts.push(`${r.bounces} Bounce${r.bounces > 1 ? 's' : ''}`)
+      if (parts.length > 0) showSuccess(`Gefunden: ${parts.join(', ')}`)
+      else showSuccess('Keine neuen Reaktionen gefunden.')
+      await loadSentEmails(); await loadAnalyticsSummary()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  const [analyticsExpanded, setAnalyticsExpanded] = useState(null) // expanded email ID
 
   const renderPostContent = (text) => {
     if (!text) return ''
@@ -440,6 +480,7 @@ function App() {
     { id: 'search', icon: '🔍', label: 'Suche' },
     { id: 'addressbook', icon: '📖', label: 'Adressbuch' },
     { id: 'campaign', icon: '📧', label: 'Kampagne' },
+    { id: 'analytics', icon: '📊', label: 'Analytics' },
     { id: 'social', icon: '💬', label: 'LinkedIn' },
     { id: 'settings', icon: '⚙️', label: 'Einstellungen' },
   ]
@@ -878,6 +919,117 @@ function App() {
                   <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
                 </div>
               ))}{posts.length === 0 && <p className="empty">Noch keine Posts.</p>}
+            </div>
+          </div>
+        )}
+
+        {/* ═══ ANALYTICS ═════════════════════════════════ */}
+        {section === 'analytics' && (
+          <div key="analytics">
+            <h1 className="page-title">Analytics</h1>
+            <p className="page-desc">Übersicht aller versendeten E-Mails, Antworten und Kampagnen-Performance</p>
+
+            {/* Summary Stats */}
+            <div className="card">
+              <h2>Übersicht</h2>
+              <div className="stats-grid">
+                <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_sent || 0}</div><div className="stat-lbl">Gesendet</div></div>
+                <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_delivered || 0}</div><div className="stat-lbl">Zugestellt</div></div>
+                <div className="stat-card" style={analyticsSummary?.total_bounced > 0 ? {borderColor:'#ef4444'} : {}}><div className="stat-val">{analyticsSummary?.total_bounced || 0}</div><div className="stat-lbl">Bounced</div></div>
+                <div className="stat-card" style={analyticsSummary?.total_replied > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{analyticsSummary?.total_replied || 0}</div><div className="stat-lbl">Antworten</div></div>
+                <div className="stat-card" style={analyticsSummary?.total_unsubscribed > 0 ? {borderColor:'#f59e0b'} : {}}><div className="stat-val">{analyticsSummary?.total_unsubscribed || 0}</div><div className="stat-lbl">Abgemeldet</div></div>
+                <div className="stat-card"><div className="stat-val">{analyticsSummary?.reply_rate || 0}%</div><div className="stat-lbl">Antwort-Rate</div></div>
+              </div>
+            </div>
+
+            {/* Check Replies Button */}
+            <div className="card">
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.75rem'}}>
+                <div>
+                  <h2 style={{margin:0}}>Gmail-Antworten prüfen</h2>
+                  <p className="sub" style={{margin:'0.25rem 0 0'}}>Durchsucht Gmail nach Antworten, Abmeldungen und Bounces</p>
+                </div>
+                <button className="btn btn-primary" disabled={checkingReplies} onClick={checkReplies}>
+                  {checkingReplies ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.5rem'}} />Wird geprüft...</> : 'Antworten prüfen'}
+                </button>
+              </div>
+              {replyCheckResult && replyCheckResult.details && replyCheckResult.details.length > 0 && (
+                <div style={{marginTop:'1rem',padding:'0.75rem',background:'#f0fdf4',borderRadius:'0.5rem',border:'1px solid #bbf7d0'}}>
+                  <strong>Ergebnis:</strong>
+                  <ul style={{margin:'0.5rem 0 0',paddingLeft:'1.25rem'}}>
+                    {replyCheckResult.details.map((d, i) => (
+                      <li key={i} style={{marginBottom:'0.25rem'}}>
+                        <span style={{fontWeight:500}}>{d.name}</span> ({d.email}) —{' '}
+                        {d.type === 'reply' && <span className="badge badge-green">Antwort</span>}
+                        {d.type === 'unsubscribe' && <span className="badge badge-yellow">Abmeldung</span>}
+                        {d.type === 'bounce' && <span className="badge badge-red">Bounce</span>}
+                        {d.snippet && <span className="sub" style={{marginLeft:'0.5rem'}}>{d.snippet}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Sent Emails List */}
+            <div className="card">
+              <h2>Versendete E-Mails ({sentEmails.length})</h2>
+              {sentEmails.length === 0 && <p className="empty">Noch keine E-Mails versendet.</p>}
+              {sentEmails.map(em => (
+                <div key={em.id} style={{border:'1px solid #e5e7eb',borderRadius:'0.5rem',marginBottom:'0.75rem',overflow:'hidden'}}>
+                  {/* Header row - clickable */}
+                  <div
+                    onClick={() => toggleAnalyticsRow(em.id)}
+                    style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0.75rem 1rem',cursor:'pointer',background:analyticsExpanded[em.id]?'#f9fafb':'#fff',gap:'0.5rem',flexWrap:'wrap'}}
+                  >
+                    <div style={{display:'flex',alignItems:'center',gap:'0.75rem',flex:1,minWidth:0}}>
+                      <span style={{transform:analyticsExpanded[em.id]?'rotate(90deg)':'rotate(0)',transition:'transform 0.15s',fontSize:'0.75rem',color:'#9ca3af'}}>▶</span>
+                      <div style={{minWidth:0}}>
+                        <div style={{fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{em.name}</div>
+                        <div className="sub" style={{fontSize:'0.75rem'}}>{em.company} · {em.email}</div>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:'0.5rem',flexShrink:0}}>
+                      {em.reply_received && !em.reply_received.startsWith('[UNSUBSCRIBE]') && <span className="badge badge-green">Antwort</span>}
+                      {em.opted_out && <span className="badge badge-yellow">Abgemeldet</span>}
+                      {em.delivery_status === 'Bounced' && <span className="badge badge-red">Bounced</span>}
+                      {em.delivery_status === 'Delivered' && <span className="badge badge-blue">Zugestellt</span>}
+                      {!em.reply_received && !em.opted_out && em.delivery_status !== 'Bounced' && em.delivery_status !== 'Delivered' && <span className="badge">Gesendet</span>}
+                      <span className="sub" style={{fontSize:'0.7rem',whiteSpace:'nowrap'}}>{em.date_email_sent?.split('T')[0]}</span>
+                    </div>
+                  </div>
+                  {/* Expanded details */}
+                  {analyticsExpanded[em.id] && (
+                    <div style={{padding:'0.75rem 1rem 1rem',borderTop:'1px solid #e5e7eb',background:'#f9fafb'}}>
+                      <div style={{marginBottom:'0.75rem'}}>
+                        <div style={{fontWeight:600,fontSize:'0.8rem',color:'#6b7280',marginBottom:'0.25rem'}}>Betreff</div>
+                        <div style={{background:'#fff',padding:'0.5rem 0.75rem',borderRadius:'0.375rem',border:'1px solid #e5e7eb'}}>{em.subject || '—'}</div>
+                      </div>
+                      <div style={{marginBottom:'0.75rem'}}>
+                        <div style={{fontWeight:600,fontSize:'0.8rem',color:'#6b7280',marginBottom:'0.25rem'}}>E-Mail-Text</div>
+                        <div style={{background:'#fff',padding:'0.5rem 0.75rem',borderRadius:'0.375rem',border:'1px solid #e5e7eb',whiteSpace:'pre-wrap',fontSize:'0.85rem',maxHeight:'300px',overflowY:'auto'}}>{em.body || '—'}</div>
+                      </div>
+                      {em.follow_up_subject && (
+                        <div style={{marginBottom:'0.75rem'}}>
+                          <div style={{fontWeight:600,fontSize:'0.8rem',color:'#6b7280',marginBottom:'0.25rem'}}>Follow-up</div>
+                          <div style={{background:'#fff',padding:'0.5rem 0.75rem',borderRadius:'0.375rem',border:'1px solid #e5e7eb'}}>
+                            <div style={{fontWeight:500,marginBottom:'0.25rem'}}>{em.follow_up_subject}</div>
+                            <div style={{whiteSpace:'pre-wrap',fontSize:'0.85rem'}}>{em.follow_up_body || '—'}</div>
+                          </div>
+                        </div>
+                      )}
+                      {em.reply_received && (
+                        <div>
+                          <div style={{fontWeight:600,fontSize:'0.8rem',color:em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#f59e0b' : '#22c55e',marginBottom:'0.25rem'}}>
+                            {em.reply_received.startsWith('[UNSUBSCRIBE]') ? 'Abmeldung' : 'Antwort erhalten'}
+                          </div>
+                          <div style={{background:em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#fffbeb' : '#f0fdf4',padding:'0.5rem 0.75rem',borderRadius:'0.375rem',border:`1px solid ${em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#fde68a' : '#bbf7d0'}`,whiteSpace:'pre-wrap',fontSize:'0.85rem'}}>{em.reply_received}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         )}

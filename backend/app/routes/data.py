@@ -18,6 +18,51 @@ from ..models.schemas import ContentTopic, SocialPlatform
 
 router = APIRouter(prefix="/data", tags=["Data"])
 
+# ─── LinkedIn existing posts context (cached) ─────────────────────
+_linkedin_context_cache: str = ""
+_linkedin_cache_ts: float = 0.0
+
+async def _get_linkedin_context(api_key: str) -> str:
+    """Fetch recent Harpocrates LinkedIn posts via Perplexity to use as context.
+    Cached for 6 hours to avoid excessive API calls."""
+    import time
+    import logging
+    global _linkedin_context_cache, _linkedin_cache_ts
+
+    if _linkedin_context_cache and (time.time() - _linkedin_cache_ts) < 21600:
+        return _linkedin_context_cache
+
+    logger = logging.getLogger("harpo.linkedin")
+    try:
+        from ..services.perplexity_service import _call_api, MODEL_FAST
+        system = """Du bist ein Social-Media-Analyst. Fasse die letzten LinkedIn-Posts des Unternehmens zusammen.
+Gib eine kurze Liste der Themen/Hooks/Kernaussagen (je 1 Zeile pro Post).
+Nur die letzten 15–20 Posts. Keine Wiederholung, nur Kernthemen."""
+        user = """Finde und fasse die letzten LinkedIn-Posts von Harpocrates Solutions GmbH zusammen.
+LinkedIn-Seite: https://www.linkedin.com/company/harpocrates/
+Gib für jeden Post eine Zeile mit dem Kernthema/Hook (max 100 Zeichen).
+Beispiel:
+- Digital Euro Pilot – ECB deadline Mai 2026
+- 9 Reports zu Compliance Automation
+- DORA Kosten €120K+ für Mittelstand"""
+
+        result = await _call_api(
+            system, user, api_key,
+            max_tokens=1500,
+            model=MODEL_FAST,
+            search_domain_filter=["linkedin.com"],
+            search_recency_filter="month",
+            search_context_size="high",
+        )
+        raw = result if isinstance(result, str) else result.get("content", "")
+        _linkedin_context_cache = raw.strip()
+        _linkedin_cache_ts = time.time()
+        logger.info(f"LinkedIn context fetched: {len(_linkedin_context_cache)} chars")
+    except Exception as e:
+        logger.warning(f"Failed to fetch LinkedIn context: {e}")
+
+    return _linkedin_context_cache
+
 
 # ─── Companies ────────────────────────────────────────────────────
 
@@ -170,6 +215,17 @@ async def generate_social_post(
 
     existing_posts = db_svc.load_social_posts(db)
     previews = [p.content[:80] for p in existing_posts[:10]]
+
+    # Fetch LinkedIn context (existing company page posts) for dedup + audience building
+    linkedin_context = ""
+    try:
+        linkedin_context = await _get_linkedin_context(api_key)
+    except Exception:
+        pass
+
+    # Combine local DB previews with LinkedIn context
+    if linkedin_context:
+        previews.append(f"--- K\u00dcRZLICH AUF LINKEDIN VER\u00d6FFENTLICHT ---\n{linkedin_context}")
 
     result = await pplx.generate_social_post(
         ct.value, ct.prompt_prefix, sp.value, ind_list, previews, api_key

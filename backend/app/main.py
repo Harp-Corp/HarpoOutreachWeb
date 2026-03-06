@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .models.db import SessionLocal, init_db
-from .routes import auth, data, email_pipeline, prospecting
+from .routes import auth, data, email_pipeline, prospecting, analytics
 from .services import database_service as db_svc
 
 logging.basicConfig(
@@ -43,6 +43,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(prospecting.router, prefix="/api")
 app.include_router(email_pipeline.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
 
 
 def _seed_settings():

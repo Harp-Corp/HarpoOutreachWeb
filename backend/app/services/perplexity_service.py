@@ -1082,12 +1082,13 @@ MANDATORY RULES:
 5. SOURCES: Include the source name AND publication date for every statistic or claim. Use Perplexity citations where available.
 6. NO HALLUCINATIONS: Only verifiable facts from real European regulatory bodies, institutions, or reputable publications.
 7. COMPLY.REG RELEVANCE: Address problems comply.reg solves.
-8. NO DUPLICATE topic/hook.
-9. FOOTER: Added automatically — do NOT include any footer.
-10. VALUE: Genuine insight for European compliance professionals.
-11. TIMELINESS: Reference recent EU regulatory developments, ECB/EBA/ESMA/BaFin publications.
-12. EUROPEAN REGULATIONS ONLY: Focus on DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, PSD2/PSD3, AML6/AMLD, EBA Guidelines, Lieferkettengesetz/CSDDD.
-13. CAPITALISATION: Use STANDARD English capitalisation. Capitalise: first word of each sentence, proper nouns (European Commission, BaFin, DORA), acronyms, titles. Do NOT write everything in lowercase.
+8. NO DUPLICATE topic/hook. Study the ALREADY POSTED list carefully — use DIFFERENT angles, statistics, regulations, and hooks.
+9. AUDIENCE BUILDING: If previous posts exist, build on them. Reference themes your audience engaged with. Create continuity and series potential (e.g. "Part 2 of our DORA series"). Avoid repeating the same regulation focus.
+10. FOOTER: Added automatically — do NOT include any footer.
+11. VALUE: Genuine insight for European compliance professionals.
+12. TIMELINESS: Reference recent EU regulatory developments, ECB/EBA/ESMA/BaFin publications.
+13. EUROPEAN REGULATIONS ONLY: Focus on DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, PSD2/PSD3, AML6/AMLD, EBA Guidelines, Lieferkettengesetz/CSDDD.
+14. CAPITALISATION: Use STANDARD English capitalisation. Capitalise: first word of each sentence, proper nouns (European Commission, BaFin, DORA), acronyms, titles. Do NOT write everything in lowercase.
 Return JSON: {{"content": "...", "hashtags": [...], "sources": ["Source Name (URL)"]}}"""
 
     industry_context = ", ".join(industries) if industries else "Financial Services, RegTech, Compliance"

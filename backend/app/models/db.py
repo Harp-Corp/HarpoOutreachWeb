@@ -172,6 +172,21 @@ def init_db():
                 conn.execute(text(
                     "ALTER TABLE social_posts ADD COLUMN is_copied BOOLEAN NOT NULL DEFAULT false"
                 ))
+    # Analytics-related columns on leads
+    if "leads" in insp.get_table_names():
+        lead_cols = [c["name"] for c in insp.get_columns("leads")]
+        migrations = [
+            ("delivery_status", "ALTER TABLE leads ADD COLUMN delivery_status VARCHAR NOT NULL DEFAULT 'Pending'"),
+            ("reply_received", "ALTER TABLE leads ADD COLUMN reply_received TEXT NOT NULL DEFAULT ''"),
+            ("opted_out", "ALTER TABLE leads ADD COLUMN opted_out BOOLEAN NOT NULL DEFAULT false"),
+            ("opt_out_date", "ALTER TABLE leads ADD COLUMN opt_out_date TIMESTAMP"),
+            ("follow_up_email_json", "ALTER TABLE leads ADD COLUMN follow_up_email_json TEXT"),
+            ("date_follow_up_sent", "ALTER TABLE leads ADD COLUMN date_follow_up_sent TIMESTAMP"),
+        ]
+        for col_name, sql in migrations:
+            if col_name not in lead_cols:
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
 
 
 def get_db():
@@ -181,5 +196,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
-
