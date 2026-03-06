@@ -413,7 +413,7 @@ async def delete_draft(lead_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/reset/{lead_id}")
 async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
-    """Reset a lead for re-sending: clears draft, send date, thread ID, delivery status."""
+    """Full reset: clears draft, send date, thread ID, delivery status."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -421,10 +421,35 @@ async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
     lead.date_email_sent = None
     lead.delivery_status = "Pending"
     lead.gmail_thread_id = None
+    lead.reply_received = ""
     lead.status = "Identified"
     lead.updated_at = datetime.utcnow()
     db.commit()
-    _logger.info(f"Lead {lead_id} ({lead.name}) campaign reset")
+    _logger.info(f"Lead {lead_id} ({lead.name}) full campaign reset")
+    return {"success": True}
+
+
+@router.post("/resend/{lead_id}")
+async def resend_lead(lead_id: UUID, db: Session = Depends(get_db)):
+    """Soft reset for re-sending: keeps draft+approval, only clears send date so it can be sent again."""
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+    if not lead.drafted_email_json:
+        raise HTTPException(400, "Kein E-Mail-Entwurf vorhanden. Bitte erst einen Draft erstellen.")
+    lead.date_email_sent = None
+    lead.delivery_status = "Pending"
+    lead.gmail_thread_id = None
+    lead.reply_received = ""
+    # Keep draft and approval, set status to Email Approved if was approved
+    draft = json.loads(lead.drafted_email_json)
+    if draft.get("is_approved"):
+        lead.status = "Email Approved"
+    else:
+        lead.status = "Email Drafted"
+    lead.updated_at = datetime.utcnow()
+    db.commit()
+    _logger.info(f"Lead {lead_id} ({lead.name}) reset for resend (draft kept)")
     return {"success": True}
 
 

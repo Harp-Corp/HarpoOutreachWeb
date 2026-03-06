@@ -1019,16 +1019,25 @@ function App() {
                           <div style={{background:em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#fffbeb' : '#f0fdf4',padding:'0.5rem 0.75rem',borderRadius:'0.375rem',border:`1px solid ${em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#fde68a' : '#bbf7d0'}`,whiteSpace:'pre-wrap',fontSize:'0.85rem'}}>{em.reply_received}</div>
                         </div>
                       )}
-                      {/* Reset button */}
-                      <div style={{marginTop:'0.75rem',paddingTop:'0.75rem',borderTop:'1px solid #e5e7eb',display:'flex',justifyContent:'flex-end'}}>
+                      {/* Reset / Resend buttons */}
+                      <div style={{marginTop:'0.75rem',paddingTop:'0.75rem',borderTop:'1px solid #e5e7eb',display:'flex',justifyContent:'flex-end',gap:'0.5rem'}}>
+                        <button className="btn btn-secondary btn-sm" style={{fontSize:'0.75rem'}} onClick={async (e) => {
+                          e.stopPropagation()
+                          if (!window.confirm(`E-Mail an ${em.name} erneut senden ermöglichen? Der bestehende Draft bleibt erhalten.`)) return
+                          try {
+                            await fetchJson(`${API}/email/resend/${em.id}`, { method: 'POST' })
+                            showSuccess(`${em.name}: bereit zum erneuten Senden`)
+                            loadSentEmails(); loadAnalyticsSummary()
+                          } catch (err) { setError('Resend-Reset fehlgeschlagen: ' + (err.message || err)) }
+                        }}>Erneut senden ermöglichen</button>
                         <button className="btn btn-ghost btn-sm" style={{color:'#ef4444',fontSize:'0.75rem'}} onClick={async (e) => {
                           e.stopPropagation()
-                          if (!window.confirm(`Kampagne für ${em.name} zurücksetzen? Draft, Sendedatum und Status werden gelöscht.`)) return
+                          if (!window.confirm(`Kampagne für ${em.name} komplett zurücksetzen? Draft, Sendedatum und Status werden gelöscht.`)) return
                           try {
                             await fetchJson(`${API}/email/reset/${em.id}`, { method: 'POST' })
                             loadSentEmails(); loadAnalyticsSummary()
                           } catch (err) { setError('Reset fehlgeschlagen: ' + (err.message || err)) }
-                        }}>Kampagne zurücksetzen</button>
+                        }}>Komplett zurücksetzen</button>
                       </div>
                     </div>
                   )}
