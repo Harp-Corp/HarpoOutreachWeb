@@ -1,0 +1,15 @@
+steps:
+  # Build backend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'europe-west1-docker.pkg.dev/harpo-outreach/harpo-docker/backend:latest', '-f', 'backend/Dockerfile', 'backend/']
+
+  # Build frontend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'europe-west1-docker.pkg.dev/harpo-outreach/harpo-docker/frontend:latest', '-f', 'frontend/Dockerfile', 'frontend/']
+
+images:
+  - 'europe-west1-docker.pkg.dev/harpo-outreach/harpo-docker/backend:latest'
+  - 'europe-west1-docker.pkg.dev/harpo-outreach/harpo-docker/frontend:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
