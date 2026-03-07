@@ -23,7 +23,8 @@ body {
   padding: 1.25rem 0.75rem;
   z-index: 100;
 }
-.sidebar-header { padding: 0 0.5rem 1.25rem; border-bottom: 1px solid #1e293b; margin-bottom: 0.75rem; }
+.sidebar-header { padding: 0.5rem 0.5rem 1.25rem; border-bottom: 1px solid #1e293b; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: center; }
+.sidebar-logo { width: 100%; max-width: 160px; height: auto; object-fit: contain; }
 .logo { font-size: 1.375rem; font-weight: 700; color: #fff; }
 .logo-sub { font-size: 0.625rem; color: #475569; text-transform: uppercase; letter-spacing: 0.15em; }
 

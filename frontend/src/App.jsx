@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import harpoLogo from './assets/logo.webp'
 
 const API = '/api'
 
@@ -593,7 +594,7 @@ function App() {
   return (
     <div className="layout">
       <aside className="sidebar">
-        <div className="sidebar-header"><div className="logo">Harpo</div><div className="logo-sub">Outreach</div></div>
+        <div className="sidebar-header"><img src={harpoLogo} alt="Harpocrates" className="sidebar-logo" /></div>
         <nav className="sidebar-nav">
           {menuItems.map(m => (
             <button key={m.id} type="button" className={`nav-item ${section === m.id ? 'active' : ''}`} onClick={() => setSection(m.id)}>
