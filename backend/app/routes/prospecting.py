@@ -13,7 +13,9 @@ from ..models.db import get_db
 from ..services import database_service as db_svc
 from ..services import perplexity_service as pplx
 from ..services import email_verify_service as email_verify
+from ..services import brave_fallback as brave
 from ..models.schemas import Industry, Region
+from ..config import settings
 
 logger = logging.getLogger("harpo.prospecting")
 
@@ -46,24 +48,42 @@ async def search_company(
     if not company_name:
         raise HTTPException(400, "Unternehmensname darf nicht leer sein.")
 
+    brave_api_key = settings.brave_api_key    # Fallback search key (may be empty)
+    tavily_api_key = settings.tavily_api_key  # Second fallback (may be empty)
+
     # Step 1: Check if company already exists in DB (fuzzy match)
     existing = db_svc.get_company_by_name(db, company_name)
     if existing:
         company = existing
         logger.info(f"[SearchCompany] Found existing company: {company.name}")
     else:
-        # Search via Perplexity
+        # Search via Perplexity (with Brave fallback)
         logger.info(f"[SearchCompany] Searching for: {company_name}")
+        company_data = None
+        used_fallback = False
+
         try:
             company_data = await pplx.search_single_company(company_name, api_key)
         except Exception as ex:
             err_str = str(ex)
-            if "quota" in err_str.lower() or "401" in err_str:
-                return {"success": False, "error": "api_quota", "message": "Perplexity API Quota erschöpft. Bitte später erneut versuchen oder API-Guthaben prüfen."}
-            return {"success": False, "error": "api_error", "message": f"API-Fehler: {err_str[:200]}"}
+            is_quota_error = "quota" in err_str.lower() or "401" in err_str or "insufficient" in err_str.lower()
+            if is_quota_error and (brave_api_key or tavily_api_key):
+                logger.info(f"[SearchCompany] Perplexity quota exhausted, falling back to Brave Search")
+                try:
+                    company_data = await brave.search_single_company_brave(company_name, brave_api_key, tavily_api_key)
+                    used_fallback = True
+                except Exception as bex:
+                    logger.warning(f"[SearchCompany] Brave fallback also failed: {bex}")
+            elif is_quota_error:
+                return {"success": False, "error": "api_quota", "message": "Perplexity API Quota erschöpft und kein Fallback konfiguriert. Brave oder Tavily API Key in den Einstellungen hinterlegen."}
+            else:
+                return {"success": False, "error": "api_error", "message": f"API-Fehler: {err_str[:200]}"}
         
         if not company_data:
             return {"success": False, "error": "not_found", "message": f"Unternehmen '{company_name}' nicht gefunden. Tipp: Offiziellen Firmennamen verwenden (z.B. 'Deutsche Bank AG' statt 'Deutsche Bank')."}
+        
+        if used_fallback:
+            logger.info(f"[SearchCompany] Using Brave fallback data for {company_name}")
         
         # Map Perplexity response keys to DB column names
         mapped = {
@@ -101,23 +121,32 @@ async def search_company(
 
     # Step 3: Find new contacts at this company
     logger.info(f"[SearchCompany] Finding contacts at {company.name}...")
+    contacts = []
+    contact_warning = None
     try:
         contacts = await pplx.find_contacts(
             company.name, company.industry or "", company.region or "", company.website or "", api_key
         )
     except Exception as ex:
         err_str = str(ex)
-        logger.warning(f"[SearchCompany] Contact search failed: {ex}")
-        if "quota" in err_str.lower() or "401" in err_str:
-            return {
-                "success": True,
-                "company": company_resp,
-                "contacts": [],
-                "total_contacts": 0,
-                "verified_contacts": 0,
-                "warning": "Perplexity API Quota erschöpft — Kontaktsuche nicht möglich. Bitte API-Guthaben prüfen.",
-            }
-        contacts = []
+        is_quota = "quota" in err_str.lower() or "401" in err_str or "insufficient" in err_str.lower()
+        logger.warning(f"[SearchCompany] Contact search failed (quota={is_quota}): {ex}")
+        if is_quota and (brave_api_key or tavily_api_key):
+            # Fallback to Brave for contacts
+            logger.info(f"[SearchCompany] Falling back to Brave for contacts at {company.name}")
+            try:
+                contacts = await brave.find_contacts_brave(
+                    company.name, company.industry or "", company.website or "",
+                    brave_api_key, tavily_api_key
+                )
+                contact_warning = "Kontakte via Fallback-Suche gefunden (eingeschr\u00e4nkte Datenqualit\u00e4t). Verifizierung empfohlen."
+            except Exception as bex:
+                logger.warning(f"[SearchCompany] Brave contact fallback failed: {bex}")
+                contact_warning = "Kontaktsuche eingeschr\u00e4nkt \u2014 Perplexity Quota ersch\u00f6pft, Fallback fehlgeschlagen."
+        elif is_quota:
+            contact_warning = "Perplexity API Quota ersch\u00f6pft \u2014 Kontaktsuche nicht m\u00f6glich. Bitte API-Guthaben pr\u00fcfen."
+        else:
+            logger.warning(f"[SearchCompany] Non-quota error in contact search: {ex}")
 
     saved_leads = []
     for c in contacts:
@@ -168,13 +197,16 @@ async def search_company(
     all_leads = db_svc.load_leads(db)
     company_leads = [_slim_lead_response(db_svc.lead_db_to_response(l)) for l in all_leads if l.company == company.name]
 
-    return {
+    result = {
         "success": True,
         "company": company_resp,
         "contacts": company_leads,
         "total_contacts": len(company_leads),
         "verified_contacts": sum(1 for l in company_leads if l.get("email_verified")),
     }
+    if contact_warning:
+        result["warning"] = contact_warning
+    return result
 
 
 def _slim_lead_response(lead: dict) -> dict:

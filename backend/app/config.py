@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Perplexity API
     perplexity_api_key: str = ""
 
+    # Fallback search APIs (when Perplexity quota is exhausted)
+    # Priority: Perplexity → Brave → Tavily
+    brave_api_key: str = ""
+    tavily_api_key: str = ""
+
     # Sender defaults
     sender_name: str = "Martin Foerster"
     sender_email: str = "mf@harpocrates-corp.com"
@@ -39,3 +44,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
