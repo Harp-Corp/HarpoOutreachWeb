@@ -186,6 +186,19 @@ def get_lead(db: Session, lead_id: UUID) -> Optional[LeadDB]:
     return db.get(LeadDB, lead_id)
 
 
+def update_lead(db: Session, lead_id: UUID, updates: dict) -> Optional[LeadDB]:
+    """Update specific fields on a lead. Returns the updated lead or None."""
+    obj = db.get(LeadDB, lead_id)
+    if not obj:
+        return None
+    for key, value in updates.items():
+        if hasattr(obj, key):
+            setattr(obj, key, value)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
 def delete_lead(db: Session, lead_id: UUID):
     obj = db.get(LeadDB, lead_id)
     if obj:

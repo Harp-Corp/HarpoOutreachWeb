@@ -14,6 +14,7 @@ from ..services import database_service as db_svc
 from ..services import perplexity_service as pplx
 from ..services import email_verify_service as email_verify
 from ..services import brave_fallback as brave
+from ..services import multi_verify_service as multi_verify
 from ..models.schemas import Industry, Region
 from ..config import settings
 
@@ -193,6 +194,48 @@ async def search_company(
         verified_count = sum(1 for r in verify_results if isinstance(r, dict) and r.get("verified"))
         logger.info(f"[SearchCompany] Verified {verified_count}/{len(unverified)} contacts")
     
+    # Step 5: Cross-verification via independent sources (if fallback APIs available)
+    has_cross_verify = brave_api_key or tavily_api_key or settings.hunter_api_key
+    cross_verify_count = 0
+    if has_cross_verify and saved_leads:
+        logger.info(f"[SearchCompany] Cross-verifying {len(saved_leads)} contacts via independent sources...")
+        try:
+            cross_contacts = [
+                {
+                    "name": l.name,
+                    "title": l.title or "",
+                    "email": l.email or "",
+                    "linkedin_url": l.linkedin_url or "",
+                }
+                for l in saved_leads
+            ]
+            cross_results = await multi_verify.cross_verify_contacts(
+                contacts=cross_contacts,
+                company=company.name,
+                company_website=company.website or "",
+                brave_api_key=brave_api_key,
+                tavily_api_key=tavily_api_key,
+                hunter_api_key=settings.hunter_api_key,
+                max_concurrent=2,
+            )
+            # Update leads in DB with cross-verification results
+            for lead, cv_result in zip(saved_leads, cross_results):
+                update_data = {}
+                if cv_result.get("confidence_score", 0) > 0:
+                    notes = cv_result.get("verification_summary", "")
+                    update_data["verification_notes"] = notes
+                if cv_result.get("email_corrected"):
+                    update_data["email"] = cv_result["email_corrected"]
+                if cv_result.get("linkedin_url") and not lead.linkedin_url:
+                    update_data["linkedin_url"] = cv_result["linkedin_url"]
+                if update_data:
+                    db_svc.update_lead(db, lead.id, update_data)
+                if cv_result.get("cross_verified"):
+                    cross_verify_count += 1
+            logger.info(f"[SearchCompany] Cross-verified {cross_verify_count}/{len(saved_leads)} contacts")
+        except Exception as ex:
+            logger.warning(f"[SearchCompany] Cross-verification failed: {ex}")
+
     # Reload leads to get updated verification status — slim response
     all_leads = db_svc.load_leads(db)
     company_leads = [_slim_lead_response(db_svc.lead_db_to_response(l)) for l in all_leads if l.company == company.name]
@@ -204,6 +247,8 @@ async def search_company(
         "total_contacts": len(company_leads),
         "verified_contacts": sum(1 for l in company_leads if l.get("email_verified")),
     }
+    if cross_verify_count > 0:
+        result["cross_verified_contacts"] = cross_verify_count
     if contact_warning:
         result["warning"] = contact_warning
     return result

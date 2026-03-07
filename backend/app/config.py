@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     brave_api_key: str = ""
     tavily_api_key: str = ""
 
+    # Hunter.io (email finder + verifier, 50 free credits/month)
+    hunter_api_key: str = ""
+
     # Sender defaults
     sender_name: str = "Martin Foerster"
     sender_email: str = "mf@harpocrates-corp.com"
