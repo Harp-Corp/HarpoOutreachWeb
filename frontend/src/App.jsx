@@ -4,7 +4,7 @@ import harpoLogo from './assets/logo.webp'
 const API = '/api'
 
 function App() {
-  const [section, setSection] = useState('search')
+  const [section, setSection] = useState('overview')
   const [stats, setStats] = useState(null)
   const [companies, setCompanies] = useState([])
   const [leads, setLeads] = useState([])
@@ -20,6 +20,7 @@ function App() {
   const [successMsg, setSuccessMsg] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
   const [abFilter, setAbFilter] = useState('all')
+  const [abGroupByCompany, setAbGroupByCompany] = useState(true)
   const [abSearchQuery, setAbSearchQuery] = useState('')
   const [abSearchResult, setAbSearchResult] = useState(null) // { company, contacts }
   const [abSearching, setAbSearching] = useState(false)
@@ -27,7 +28,7 @@ function App() {
   const [checkingReplies, setCheckingReplies] = useState(false)
   const [replyCheckResult, setReplyCheckResult] = useState(null)
   const [loadingProgress, setLoadingProgress] = useState(null) // { current, total } for batch ops
-  const [searchLeadsFilter, setSearchLeadsFilter] = useState('all') // 'all' | 'verified' | 'unverified'
+  const [searchLeadsFilter, setSearchLeadsFilter] = useState('with_email') // 'all' | 'verified' | 'unverified'
   const [searchLeadsQuery, setSearchLeadsQuery] = useState('') // text filter for leads
   const [leadsGroupByCompany, setLeadsGroupByCompany] = useState(true) // group contacts by company
   const [leadsDisplayLimit, setLeadsDisplayLimit] = useState(50) // pagination: show N leads at a time
@@ -85,7 +86,12 @@ function App() {
         }
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}))
-          throw new Error(err.detail || `HTTP ${resp.status}`)
+          const detail = err.detail || ''
+          if (resp.status === 400 && detail.includes('API Key')) throw new Error('Perplexity API-Key nicht konfiguriert. Bitte in den Einstellungen hinterlegen.')
+          if (resp.status === 401 || detail.toLowerCase().includes('quota')) throw new Error('API-Quota erschöpft oder ungültiger Key. Bitte Guthaben prüfen.')
+          if (resp.status === 404) throw new Error('Nicht gefunden. Eintrag wurde möglicherweise bereits gelöscht.')
+          if (resp.status >= 500) throw new Error(`Server-Fehler (${resp.status}). Bitte in 30s erneut versuchen.`)
+          throw new Error(detail || `Fehler ${resp.status}`)
         }
         return resp.json()
       } catch (e) {
@@ -123,8 +129,9 @@ function App() {
   useEffect(() => { loadDashboard(); loadAuthStatus() }, [loadDashboard, loadAuthStatus])
   useEffect(() => {
     setError(''); setSuccessMsg('')
-    if (section === 'search') { loadCompanies(); loadLeads() }
-    else if (section === 'addressbook') { loadAddressBook() }
+    if (section === 'overview') { loadDashboard(); loadLeads(); loadAddressBook(); loadCompanies(); loadAnalyticsSummary() }
+    else if (section === 'search') { loadCompanies(); loadLeads() }
+    else if (section === 'addressbook') { loadAddressBook(); loadLeads() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts() }
     else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel() }
@@ -226,8 +233,20 @@ function App() {
   }
   const verifyAllEmails = async () => {
     startLoading('E-Mails werden verifiziert...'); setError('')
-    try { const r = await fetchJson(`${API}/prospecting/verify-all`, { method: 'POST' }); showSuccess(`${r.verified || 0}/${r.total || 0} verifiziert`); await loadLeads() }
-    catch (e) { setError(e.message) } stopLoading()
+    // Start polling for progress
+    const pollId = setInterval(async () => {
+      try {
+        const p = await fetchJson(`${API}/prospecting/verify-progress`)
+        if (p.running) setLoadingProgress({ current: p.current, total: p.total })
+      } catch (_) { /* ignore poll errors */ }
+    }, 2000)
+    try {
+      const r = await fetchJson(`${API}/prospecting/verify-all`, { method: 'POST' })
+      showSuccess(`${r.verified || 0}/${r.total || 0} verifiziert`)
+      await loadLeads()
+    } catch (e) { setError(e.message) }
+    clearInterval(pollId)
+    stopLoading()
   }
   // New: Technical SMTP verification
   const verifyEmailTechnical = async (leadId) => {
@@ -242,9 +261,13 @@ function App() {
   }
 
   const addToAddressBook = async (leadId) => {
-    startLoading('Wird ins Adressbuch übernommen...'); setError('')
-    try { await fetchJson(`${API}/data/address-book/from-lead/${leadId}`, { method: 'POST' }); showSuccess('Ins Adressbuch übernommen'); await loadAddressBook() }
-    catch (e) { setError(e.message) } stopLoading()
+    setError('')
+    // Optimistic: immediately show as "in address book"
+    const lead = leads.find(l => l.id === leadId)
+    if (lead?.email) setAddressBook(prev => [...prev, { id: 'temp-' + leadId, email: lead.email, name: lead.name, company: lead.company, title: lead.title, contact_status: 'active', source: 'verified', email_verified: true }])
+    showSuccess('Ins Adressbuch übernommen')
+    try { await fetchJson(`${API}/data/address-book/from-lead/${leadId}`, { method: 'POST' }); await loadAddressBook() }
+    catch (e) { setError(e.message); await loadAddressBook() }
   }
   const addAllVerifiedToAddressBook = async () => {
     const verified = leads.filter(l => l.email_verified && !abEmails.has(l.email?.toLowerCase()))
@@ -265,13 +288,14 @@ function App() {
     catch (e) { setError(e.message) }
   }
   const setContactStatus = async (entryId, newStatus) => {
-    startLoading(newStatus === 'blocked' ? 'Kontakt wird gesperrt...' : 'Kontakt wird freigeschaltet...'); setError('')
+    setError('')
+    // Optimistic update
+    setAddressBook(prev => prev.map(a => a.id === entryId ? { ...a, contact_status: newStatus } : a))
+    showSuccess(newStatus === 'blocked' ? 'Kontakt gesperrt' : 'Kontakt freigeschaltet')
     try {
       await fetchJson(`${API}/data/address-book/${entryId}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contact_status: newStatus }) })
-      showSuccess(newStatus === 'blocked' ? 'Kontakt gesperrt' : 'Kontakt freigeschaltet')
       await loadAddressBook()
-    } catch (e) { setError(e.message) }
-    stopLoading()
+    } catch (e) { setError(e.message); await loadAddressBook() }
   }
   const permanentlyDeleteContact = async (entryId) => {
     if (!confirm('Kontakt endgültig löschen?')) return
@@ -390,9 +414,13 @@ function App() {
   const abEmails = new Set(addressBook.map(a => a.email?.toLowerCase()))
 
   // Filtered leads for search page
+  const leadsWithEmail = leads.filter(l => l.email)
+  const leadsNoEmail = leads.filter(l => !l.email)
   const filteredLeads = leads.filter(l => {
+    if (searchLeadsFilter === 'with_email' && !l.email) return false
     if (searchLeadsFilter === 'verified' && !l.email_verified) return false
-    if (searchLeadsFilter === 'unverified' && l.email_verified) return false
+    if (searchLeadsFilter === 'unverified' && (l.email_verified || !l.email)) return false
+    if (searchLeadsFilter === 'no_email' && l.email) return false
     if (searchLeadsQuery) {
       const q = searchLeadsQuery.toLowerCase()
       return (l.name?.toLowerCase().includes(q) || l.company?.toLowerCase().includes(q) || l.email?.toLowerCase().includes(q) || l.title?.toLowerCase().includes(q))
@@ -565,6 +593,8 @@ function App() {
 
   // Approve/unapprove single lead
   const campApprove = async (leadId) => {
+    // Optimistic: immediately mark as approved
+    setCampLeads(prev => prev.map(l => l.id === leadId ? { ...l, drafted_email: { ...l.drafted_email, is_approved: true } } : l))
     try {
       await fetchJson(`${API}/email/approve/${leadId}`, { method: 'POST' })
       const leadsResp = await fetchJson(`${API}/data/leads`)
@@ -704,6 +734,7 @@ function App() {
   }
 
   const menuItems = [
+    { id: 'overview', icon: '📋', label: 'Übersicht' },
     { id: 'search', icon: '🔍', label: 'Suche' },
     { id: 'addressbook', icon: '📖', label: 'Adressbuch' },
     { id: 'campaign', icon: '📧', label: 'Kampagne' },
@@ -723,7 +754,7 @@ function App() {
     return (
       <div className="wizard-steps">
         {steps.map((s, i) => (
-          <div key={s.num} className={`wizard-step ${campStep === s.num ? 'active' : ''} ${campStep > s.num ? 'done' : ''}`}>
+          <div key={s.num} className={`wizard-step ${campStep === s.num ? 'active' : ''} ${campStep > s.num ? 'done' : ''}`} onClick={() => { if (campStep > s.num) setCampStep(s.num) }} style={campStep > s.num ? {cursor:'pointer'} : {}}>
             <div className="wizard-num">{campStep > s.num ? '✓' : s.num}</div>
             <span className="wizard-label">{s.label}</span>
             {i < steps.length - 1 && <div className="wizard-line" />}
@@ -779,6 +810,114 @@ function App() {
           </div>
         </div>}
 
+        {/* === UEBERSICHT ========================================= */}
+        {section === 'overview' && (
+          <div key="overview">
+            <h1 className="page-title">Übersicht</h1>
+            <p className="page-desc">Aktueller Status und nächste Schritte</p>
+
+            {authStatus && !authStatus.authenticated && (
+              <div className="card" style={{background:'#fffbeb',border:'1px solid #fde68a',marginBottom:'1rem'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'0.75rem',flexWrap:'wrap'}}>
+                  <div><strong>⚠ Google nicht verbunden</strong><p className="sub" style={{margin:'0.25rem 0 0'}}>E-Mail-Versand erfordert Google-Anbindung.</p></div>
+                  <a href="/api/auth/google/login" className="btn btn-primary">Google verbinden</a>
+                </div>
+              </div>
+            )}
+
+            {stats && (
+              <div className="stats-grid" style={{marginBottom:'1.25rem'}}>
+                <div className="stat-card"><div className="stat-val">{companies.length}</div><div className="stat-lbl">Unternehmen</div></div>
+                <div className="stat-card"><div className="stat-val">{leads.length}</div><div className="stat-lbl">Kontakte</div></div>
+                <div className="stat-card"><div className="stat-val">{leads.filter(l => l.email_verified).length}</div><div className="stat-lbl">Verifiziert</div></div>
+                <div className="stat-card"><div className="stat-val">{addressBook.length}</div><div className="stat-lbl">Adressbuch</div></div>
+                <div className="stat-card"><div className="stat-val">{stats.emails_sent || 0}</div><div className="stat-lbl">Gesendet</div></div>
+                <div className="stat-card" style={analyticsSummary?.total_replied > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{analyticsSummary?.total_replied || 0}</div><div className="stat-lbl">Antworten</div></div>
+              </div>
+            )}
+
+            <div className="card">
+              <h2>Nächste Schritte</h2>
+              <div className="overview-actions">
+                {companies.length === 0 && (
+                  <div className="overview-action-item" onClick={() => setSection('search')}>
+                    <div className="overview-action-icon">🔍</div>
+                    <div className="overview-action-content"><strong>Unternehmen suchen</strong><span className="sub">Starte mit der Suche nach relevanten Unternehmen</span></div>
+                    <span className="overview-action-arrow">→</span>
+                  </div>
+                )}
+                {companies.length > 0 && leads.length === 0 && (
+                  <div className="overview-action-item" onClick={() => setSection('search')}>
+                    <div className="overview-action-icon">👥</div>
+                    <div className="overview-action-content"><strong>Kontakte finden</strong><span className="sub">{companies.length} Unternehmen gefunden — jetzt Ansprechpartner suchen</span></div>
+                    <span className="overview-action-arrow">→</span>
+                  </div>
+                )}
+                {leads.filter(l => !l.email_verified && l.email).length > 0 && (
+                  <div className="overview-action-item" onClick={() => setSection('search')}>
+                    <div className="overview-action-icon">✉️</div>
+                    <div className="overview-action-content"><strong>{leads.filter(l => !l.email_verified && l.email).length} Kontakte verifizieren</strong><span className="sub">E-Mail-Adressen prüfen für die Übernahme ins Adressbuch</span></div>
+                    <span className="overview-action-arrow">→</span>
+                  </div>
+                )}
+                {leads.filter(l => l.email_verified && !abEmails.has(l.email?.toLowerCase())).length > 0 && (
+                  <div className="overview-action-item" onClick={() => setSection('search')}>
+                    <div className="overview-action-icon">📖</div>
+                    <div className="overview-action-content"><strong>{leads.filter(l => l.email_verified && !abEmails.has(l.email?.toLowerCase())).length} ins Adressbuch übernehmen</strong><span className="sub">Verifizierte Kontakte bereit zur Übernahme</span></div>
+                    <span className="overview-action-arrow">→</span>
+                  </div>
+                )}
+                {addressBook.filter(a => (a.contact_status || 'active') === 'active' && a.email).length > 0 && (
+                  <div className="overview-action-item" onClick={() => setSection('campaign')}>
+                    <div className="overview-action-icon">📧</div>
+                    <div className="overview-action-content"><strong>Kampagne starten</strong><span className="sub">{addressBook.filter(a => (a.contact_status || 'active') === 'active' && a.email).length} nutzbare Kontakte</span></div>
+                    <span className="overview-action-arrow">→</span>
+                  </div>
+                )}
+                {stats?.emails_sent > 0 && (
+                  <div className="overview-action-item" onClick={() => setSection('analytics')}>
+                    <div className="overview-action-icon">📊</div>
+                    <div className="overview-action-content"><strong>Antworten prüfen</strong><span className="sub">{stats.emails_sent} E-Mails versendet</span></div>
+                    <span className="overview-action-arrow">→</span>
+                  </div>
+                )}
+                <div className="overview-action-item" onClick={() => setSection('social')}>
+                  <div className="overview-action-icon">💬</div>
+                  <div className="overview-action-content"><strong>LinkedIn-Post erstellen</strong><span className="sub">Thought Leadership und Regulatory Updates</span></div>
+                  <span className="overview-action-arrow">→</span>
+                </div>
+              </div>
+            </div>
+
+            {(leads.length > 0 || addressBook.length > 0) && (
+              <div className="card">
+                <h2>Pipeline</h2>
+                <div className="overview-pipeline">
+                  {[
+                    { label: 'Identifiziert', count: leads.length, color: '#6b7280' },
+                    { label: 'Verifiziert', count: leads.filter(l => l.email_verified).length, color: '#3b82f6' },
+                    { label: 'Im Adressbuch', count: addressBook.length, color: '#8b5cf6' },
+                    { label: 'Gesendet', count: stats?.emails_sent || 0, color: '#f59e0b' },
+                    { label: 'Antworten', count: analyticsSummary?.total_replied || 0, color: '#22c55e' },
+                  ].map(stage => {
+                    const max = Math.max(leads.length, 1)
+                    const pct = Math.round((stage.count / max) * 100)
+                    return (
+                      <div key={stage.label} style={{display:'flex',alignItems:'center',gap:'0.75rem'}}>
+                        <div style={{width:'100px',fontSize:'0.8rem',color:'#6b7280',textAlign:'right'}}>{stage.label}</div>
+                        <div style={{flex:1,background:'#f3f4f6',borderRadius:'0.25rem',height:'24px',overflow:'hidden'}}>
+                          <div style={{width:`${pct}%`,height:'100%',background:stage.color,borderRadius:'0.25rem',transition:'width 0.5s',minWidth:stage.count > 0 ? '2px' : 0}} />
+                        </div>
+                        <div style={{width:'40px',fontSize:'0.8rem',fontWeight:600}}>{stage.count}</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ═══ SUCHE ═══════════════════════════════════ */}
         {section === 'search' && (
           <div key="search">
@@ -789,7 +928,7 @@ function App() {
               <CheckboxGroup label="Regionen" items={regions} selected={selRegions} onToggle={v => toggle(selRegions, setSelRegions, v)} />
               <CheckboxGroup label="Größe (optional)" items={sizesOpts} selected={selSizes} onToggle={v => toggle(selSizes, setSelSizes, v)} />
               <div className="search-actions">
-                <button className="btn btn-primary" disabled={loading || !selIndustries.length || !selRegions.length} onClick={findCompanies}>Suche starten ({selIndustries.length}×{selRegions.length})</button>
+                <button className="btn btn-primary" disabled={loading || !selIndustries.length || !selRegions.length} onClick={findCompanies}>{selIndustries.length > 0 && selRegions.length > 0 ? `${selIndustries.length} Branche${selIndustries.length > 1 ? 'n' : ''}, ${selRegions.length} Region${selRegions.length > 1 ? 'en' : ''} durchsuchen` : 'Suche starten'}</button>
                 {(selIndustries.length > 0 || selRegions.length > 0 || selSizes.length > 0) && <button className="btn btn-ghost" onClick={() => { setSelIndustries([]); setSelRegions([]); setSelSizes([]) }}>Filter zurücksetzen</button>}
                 {(companies.length > 0 || leads.length > 0) && <button className="btn btn-ghost" style={{color:'#ef4444'}} onClick={clearSearchResults}>Alle Ergebnisse löschen</button>}
               </div>
@@ -832,9 +971,11 @@ function App() {
                           className="leads-search-input"
                         />
                         <div className="filter-bar" style={{border:'none',padding:0,margin:0}}>
-                          <button className={`btn btn-sm ${searchLeadsFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('all')}>Alle ({leads.length})</button>
+                          <button className={`btn btn-sm ${searchLeadsFilter === 'with_email' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('with_email')}>Mit E-Mail ({leadsWithEmail.length})</button>
                           <button className={`btn btn-sm ${searchLeadsFilter === 'verified' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('verified')}>✓ ({verifiedLeads.length})</button>
                           <button className={`btn btn-sm ${searchLeadsFilter === 'unverified' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('unverified')}>Offen ({unverifiedLeads.length})</button>
+                          <button className={`btn btn-sm ${searchLeadsFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('all')}>Alle ({leads.length})</button>
+                          {leadsNoEmail.length > 0 && <button className={`btn btn-sm ${searchLeadsFilter === 'no_email' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('no_email')}>Ohne E-Mail ({leadsNoEmail.length})</button>}
                           <button className={`btn btn-sm ${leadsGroupByCompany ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setLeadsGroupByCompany(!leadsGroupByCompany)} title="Nach Firma gruppieren">🏢</button>
                         </div>
                       </div>
@@ -1008,6 +1149,7 @@ function App() {
                   <button className={`btn btn-sm ${abFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('all')}>Alle ({addressBook.length})</button>
                   <button className={`btn btn-sm ${abFilter === 'active' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('active')}>Nutzbar ({addressBook.filter(a => (a.contact_status || 'active') === 'active').length})</button>
                   <button className={`btn btn-sm ${abFilter === 'blocked' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAbFilter('blocked')}>Gesperrt ({addressBook.filter(a => a.contact_status === 'blocked').length})</button>
+                  <button className={`btn btn-sm ${abGroupByCompany ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setAbGroupByCompany(!abGroupByCompany)} title="Nach Firma gruppieren">🏢</button>
                 </div>
               )}
               {showAddForm && (
@@ -1026,33 +1168,48 @@ function App() {
                 </form>
               )}
               <div className="list">
-                {addressBook
-                  .filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked'))
-                  .map(a => {
-                  const isBlocked = a.contact_status === 'blocked'
-                  return (
-                    <div key={a.id} className={`list-item ${isBlocked ? 'list-item-blocked' : ''}`}>
-                      <div className="list-main">
-                        <strong>{a.name}</strong>
-                        <span className="sub">{a.title} · {a.company}</span>
-                        <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                {(() => {
+                  const abFiltered = addressBook.filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked'))
+                  const renderRow = (a, grouped) => {
+                    const isBlocked = a.contact_status === 'blocked'
+                          return (
+                            <div key={a.id} className={`list-item ${isBlocked ? 'list-item-blocked' : ''}`} style={grouped ? {paddingLeft:'0.5rem'} : {}}>
+                              <div className="list-main">
+                                <strong>{a.name}</strong>
+                                <span className="sub">{grouped ? a.title : `${a.title} · ${a.company}`}</span>
+                                <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                              </div>
+                              <div className="list-actions">
+                                <span className={`badge ${a.source === 'verified' ? 'badge-green' : 'badge-blue'}`}>{a.source === 'verified' ? 'Verifiziert' : 'Manuell'}</span>
+                                {isBlocked
+                                  ? <span className="badge badge-red">Gesperrt</span>
+                                  : <span className="badge badge-green">Nutzbar</span>
+                                }
+                                {isBlocked
+                                  ? <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => setContactStatus(a.id, 'active')} title="Freischalten">Freischalten</button>
+                                  : <button className="btn btn-ghost btn-sm" style={{color:'#f59e0b'}} disabled={loading} onClick={() => setContactStatus(a.id, 'blocked')} title="Sperren">Sperren</button>
+                                }
+                                <span className="action-separator" />
+                                <button className="btn btn-ghost btn-sm btn-danger-subtle" disabled={loading} onClick={() => permanentlyDeleteContact(a.id)} title="Endgültig löschen">×</button>
+                              </div>
+                            </div>
+                          )
+                  }
+                  if (abGroupByCompany && abFiltered.length > 0) {
+                    const abGrouped = abFiltered.reduce((acc, a) => { const k = a.company || 'Sonstige'; if (!acc[k]) acc[k] = []; acc[k].push(a); return acc }, {})
+                    return Object.entries(abGrouped).sort(([,a],[,b]) => b.length - a.length).map(([company, contacts]) => (
+                      <div key={company} className="leads-company-group">
+                        <div className="leads-company-header">
+                          <strong>{company}</strong>
+                          <span className="sub">{contacts.length} Kontakte</span>
+                        </div>
+                        {contacts.map(a => renderRow(a, true))}
                       </div>
-                      <div className="list-actions">
-                        <span className={`badge ${a.source === 'verified' ? 'badge-green' : 'badge-blue'}`}>{a.source === 'verified' ? 'Verifiziert' : 'Manuell'}</span>
-                        {isBlocked
-                          ? <span className="badge badge-red">Gesperrt</span>
-                          : <span className="badge badge-green">Nutzbar</span>
-                        }
-                        {isBlocked
-                          ? <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => setContactStatus(a.id, 'active')} title="Für Kontaktaufnahme freischalten">Freischalten</button>
-                          : <button className="btn btn-ghost btn-sm" style={{color:'#f59e0b'}} disabled={loading} onClick={() => setContactStatus(a.id, 'blocked')} title="Für Kontaktaufnahme sperren (Opt-out)">Sperren</button>
-                        }
-                        <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} disabled={loading} onClick={() => permanentlyDeleteContact(a.id)} title="Endgültig löschen">Löschen</button>
-                      </div>
-                    </div>
-                  )
-                })}
-                {addressBook.length === 0 && <p className="empty">Adressbuch ist leer. Kontakte über Suche verifizieren und übernehmen, oder manuell eintragen.</p>}
+                    ))
+                  }
+                  return abFiltered.map(a => renderRow(a, false))
+                })()}
+                {addressBook.length === 0 && <div className="empty-cta"><p>Adressbuch ist leer.</p><button className="btn btn-secondary" onClick={() => setSection('search')}>Zur Suche →</button><span className="sub">Oder oben manuell eintragen.</span></div>}
                 {addressBook.length > 0 && addressBook.filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked')).length === 0 && <p className="empty">Keine Kontakte mit diesem Filter.</p>}
               </div>
             </div>
@@ -1089,7 +1246,7 @@ function App() {
                       </div>
                     </div>
                     {activeContacts.length === 0 ? (
-                      <p className="empty">Keine nutzbaren Kontakte im Adressbuch. Bitte zuerst über die Suche Kontakte verifizieren und ins Adressbuch übernehmen.</p>
+                      <div className="empty-cta"><p>Keine nutzbaren Kontakte im Adressbuch.</p><button className="btn btn-secondary" onClick={() => setSection('search')}>Zur Suche →</button><button className="btn btn-ghost" onClick={() => setSection('addressbook')}>Adressbuch →</button></div>
                     ) : (
                       <>
                         <div className="list">
@@ -1428,7 +1585,7 @@ function App() {
                   </div>
                   <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
                 </div>
-              ))}{posts.length === 0 && <p className="empty">Noch keine Posts.</p>}
+              ))}{posts.length === 0 && <p className="empty">Noch keine Posts. Wähle oben eine Kategorie und klicke "Generieren".</p>}
             </div>
           </div>
         )}
@@ -1570,7 +1727,7 @@ function App() {
             {/* Sent Emails List */}
             <div className="card">
               <h2>Versendete E-Mails ({sentEmails.length})</h2>
-              {sentEmails.length === 0 && <p className="empty">Noch keine E-Mails versendet.</p>}
+              {sentEmails.length === 0 && <div className="empty-cta"><p>Noch keine E-Mails versendet.</p><button className="btn btn-secondary" onClick={() => setSection('campaign')}>Kampagne starten →</button></div>}
               {sentEmails.map(em => (
                 <div key={em.id} style={{border:'1px solid #e5e7eb',borderRadius:'0.5rem',marginBottom:'0.75rem',overflow:'hidden'}}>
                   {/* Header row - clickable */}

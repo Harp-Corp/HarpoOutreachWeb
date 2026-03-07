@@ -25,6 +25,9 @@ router = APIRouter(prefix="/prospecting", tags=["Prospecting"])
 # Max concurrent Perplexity API calls for verify-all
 MAX_CONCURRENT_VERIFY = 3
 
+# Global progress tracker for verify-all (simple in-memory)
+_verify_progress = {"running": False, "current": 0, "total": 0, "verified": 0, "errors": 0}
+
 
 
 from pydantic import BaseModel as PydanticBaseModel
@@ -537,11 +540,18 @@ async def verify_email(
     }
 
 
+@router.get("/verify-progress")
+async def verify_progress():
+    """Get current progress of verify-all operation."""
+    return _verify_progress
+
+
 @router.post("/verify-all")
 async def verify_all_emails(db: Session = Depends(get_db)):
     """Verify emails for all unverified leads — parallel with semaphore.
     Runs up to MAX_CONCURRENT_VERIFY Perplexity calls in parallel.
-    Returns progress in real-time-friendly format."""
+    Updates _verify_progress so frontend can poll."""
+    global _verify_progress
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
         raise HTTPException(400, "Perplexity API Key nicht konfiguriert.")
@@ -554,29 +564,35 @@ async def verify_all_emails(db: Session = Depends(get_db)):
 
     logger.info(f"[VerifyAll] Starting parallel verification for {len(unverified)} leads (concurrency={MAX_CONCURRENT_VERIFY})")
 
+    # Initialize progress
+    _verify_progress = {"running": True, "current": 0, "total": len(unverified), "verified": 0, "errors": 0}
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_VERIFY)
-    results = []
 
     async def verify_with_semaphore(lead):
+        global _verify_progress
         async with semaphore:
             try:
-                # Each lead gets its own DB session to avoid conflicts
                 from ..models.db import SessionLocal
                 session = SessionLocal()
                 try:
-                    # Re-fetch lead in this session
                     fresh_lead = db_svc.get_lead(session, lead.id)
                     if not fresh_lead:
                         return {"lead_id": str(lead.id), "name": lead.name, "error": "Lead not found in session"}
                     result = await _verify_single_lead(fresh_lead, api_key, session)
+                    # Update progress
+                    _verify_progress["current"] += 1
+                    if result.get("verified"):
+                        _verify_progress["verified"] += 1
                     return result
                 finally:
                     session.close()
             except Exception as ex:
+                _verify_progress["current"] += 1
+                _verify_progress["errors"] += 1
                 logger.warning(f"[VerifyAll] Failed for {lead.name}: {ex}")
                 return {"lead_id": str(lead.id), "name": lead.name, "error": str(ex)[:200]}
 
-    # Run all verifications in parallel with semaphore limiting concurrency
     tasks = [verify_with_semaphore(lead) for lead in unverified]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -591,6 +607,9 @@ async def verify_all_emails(db: Session = Depends(get_db)):
                 verified_count += 1
             if r.get("error"):
                 errors.append(f"{r.get('name', '?')}: {r['error'][:100]}")
+
+    # Mark progress as done
+    _verify_progress = {"running": False, "current": len(unverified), "total": len(unverified), "verified": verified_count, "errors": len(errors)}
 
     logger.info(f"[VerifyAll] Done: {verified_count}/{len(unverified)} verified, {len(errors)} errors")
 
