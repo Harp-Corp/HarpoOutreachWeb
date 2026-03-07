@@ -364,6 +364,11 @@ Return a single JSON object with all fields."""
         return data
 
     except Exception as ex:
+        err_str = str(ex).lower()
+        # Re-raise quota/auth errors so the route can handle them properly
+        if "quota" in err_str or "401" in err_str or "insufficient" in err_str:
+            logger.warning(f"[SearchSingleCompany] API quota error for {company_name}: {ex}")
+            raise
         logger.warning(f"[SearchSingleCompany] Failed for {company_name}: {ex}")
         return None
 
