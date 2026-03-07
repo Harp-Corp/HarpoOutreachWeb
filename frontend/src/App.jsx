@@ -180,16 +180,27 @@ function App() {
   // ─── Actions ────────────────────────────────────────────
   const findCompanies = async () => {
     if (!selIndustries.length || !selRegions.length) { setError('Bitte mindestens eine Branche und eine Region auswählen.'); return }
-    startLoading('Unternehmen werden gesucht...'); setError('')
+    startLoading('Unternehmen werden gesucht — kann bis zu 2 Minuten dauern...'); setError('')
     try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000) // 5 min timeout
       const params = new URLSearchParams()
       selIndustries.forEach(v => params.append('industries', v))
       selRegions.forEach(v => params.append('regions', v))
       selSizes.forEach(v => params.append('sizes', v))
-      const r = await fetchJson(`${API}/prospecting/find-companies?${params.toString()}`, { method: 'POST' })
+      const resp = await fetch(`${API}/prospecting/find-companies?${params.toString()}`, { method: 'POST', signal: controller.signal })
+      clearTimeout(timeout)
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.detail || `Server-Fehler (${resp.status})`)
+      }
+      const r = await resp.json()
       showSuccess(`${r.total || 0} neue Unternehmen gefunden (${companies.length + (r.total || 0)} gesamt)`, true)
       await loadCompanies()
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      if (e.name === 'AbortError') setError('Suche hat zu lange gedauert. Bitte mit weniger Branchen/Regionen erneut versuchen.')
+      else setError(e.message)
+    }
     stopLoading()
   }
   const clearSearchResults = async () => {
@@ -206,8 +217,19 @@ function App() {
 
   const findContacts = async (companyId) => {
     startLoading('Kontakte werden gesucht...'); setError('')
-    try { const r = await fetchJson(`${API}/prospecting/find-contacts/${companyId}`, { method: 'POST' }); showSuccess(`${r.total || 0} Kontakte`); await loadLeads() }
-    catch (e) { setError(e.message) } stopLoading()
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 3 * 60 * 1000) // 3 min timeout
+      const resp = await fetch(`${API}/prospecting/find-contacts/${companyId}`, { method: 'POST', signal: controller.signal })
+      clearTimeout(timeout)
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Server-Fehler (${resp.status})`) }
+      const r = await resp.json()
+      showSuccess(`${r.total || 0} Kontakte`); await loadLeads()
+    } catch (e) {
+      if (e.name === 'AbortError') setError('Kontaktsuche hat zu lange gedauert. Bitte erneut versuchen.')
+      else setError(e.message)
+    }
+    stopLoading()
   }
   const findAllContacts = async () => {
     if (!companies.length) return
@@ -218,7 +240,12 @@ function App() {
       setLoadingProgress({ current: i + 1, total: companies.length })
       setLoadingMsg(`Kontakte suchen: ${companies[i].name} (${i + 1}/${companies.length})...`)
       try {
-        const r = await fetchJson(`${API}/prospecting/find-contacts/${companies[i].id}`, { method: 'POST' })
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 3 * 60 * 1000)
+        const resp = await fetch(`${API}/prospecting/find-contacts/${companies[i].id}`, { method: 'POST', signal: controller.signal })
+        clearTimeout(timeout)
+        if (!resp.ok) throw new Error('fail')
+        const r = await resp.json()
         totalNew += (r.total || 0)
       } catch { errors++ }
     }
@@ -241,10 +268,18 @@ function App() {
       } catch (_) { /* ignore poll errors */ }
     }, 2000)
     try {
-      const r = await fetchJson(`${API}/prospecting/verify-all`, { method: 'POST' })
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 10 * 60 * 1000) // 10 min timeout
+      const resp = await fetch(`${API}/prospecting/verify-all`, { method: 'POST', signal: controller.signal })
+      clearTimeout(timeout)
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Server-Fehler (${resp.status})`) }
+      const r = await resp.json()
       showSuccess(`${r.verified || 0}/${r.total || 0} verifiziert`)
       await loadLeads()
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      if (e.name === 'AbortError') setError('Verifizierung hat zu lange gedauert. Bitte einzelne Kontakte verifizieren.')
+      else setError(e.message)
+    }
     clearInterval(pollId)
     stopLoading()
   }
