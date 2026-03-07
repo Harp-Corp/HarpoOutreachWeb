@@ -26,6 +26,11 @@ function App() {
   const [analyticsExpanded, setAnalyticsExpanded] = useState({})
   const [checkingReplies, setCheckingReplies] = useState(false)
   const [replyCheckResult, setReplyCheckResult] = useState(null)
+  const [loadingProgress, setLoadingProgress] = useState(null) // { current, total } for batch ops
+  const [searchLeadsFilter, setSearchLeadsFilter] = useState('all') // 'all' | 'verified' | 'unverified'
+  const [searchLeadsQuery, setSearchLeadsQuery] = useState('') // text filter for leads
+  const [leadsGroupByCompany, setLeadsGroupByCompany] = useState(true) // group contacts by company
+  const [leadsDisplayLimit, setLeadsDisplayLimit] = useState(50) // pagination: show N leads at a time
 
   // Campaign wizard state
   const [campStep, setCampStep] = useState(1) // 1=select, 2=draft+edit, 3=approve, 4=send
@@ -67,15 +72,41 @@ function App() {
     { value: '5.001-500.000 Mitarbeiter', label: '5.001+' },
   ]
 
-  const fetchJson = async (url, opts = {}) => {
-    const resp = await fetch(url, opts)
-    if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `HTTP ${resp.status}`) }
-    return resp.json()
+  const fetchJson = async (url, opts = {}, retries = 0) => {
+    const maxRetries = retries || (opts.method && opts.method !== 'GET' ? 1 : 2)
+    let lastError
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const resp = await fetch(url, opts)
+        if (resp.status >= 500 && attempt < maxRetries) {
+          // Server error — retry after short delay
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+          continue
+        }
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}))
+          throw new Error(err.detail || `HTTP ${resp.status}`)
+        }
+        return resp.json()
+      } catch (e) {
+        lastError = e
+        if (e.name === 'TypeError' && attempt < maxRetries) {
+          // Network error (e.g. cold-start timeout) — retry
+          await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
+          continue
+        }
+        if (attempt >= maxRetries) throw e
+      }
+    }
+    throw lastError
   }
-  const showSuccess = (msg) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(''), 4000) }
+  const showSuccess = (msg, sticky = false) => {
+    setSuccessMsg(msg)
+    if (!sticky) setTimeout(() => setSuccessMsg(''), 5000)
+  }
 
-  const startLoading = (msg) => { setLoading(true); setLoadingMsg(msg || 'Wird verarbeitet...') }
-  const stopLoading = () => { setLoading(false); setLoadingMsg('') }
+  const startLoading = (msg) => { setLoading(true); setLoadingMsg(msg || 'Wird verarbeitet...'); setLoadingProgress(null) }
+  const stopLoading = () => { setLoading(false); setLoadingMsg(''); setLoadingProgress(null) }
 
   const loadDashboard = useCallback(async () => { try { const r = await fetchJson(`${API}/data/dashboard`); setStats(r.data) } catch {} }, [])
   const loadCompanies = useCallback(async () => { try { const r = await fetchJson(`${API}/data/companies`); setCompanies(r.data || []) } catch {} }, [])
@@ -144,16 +175,24 @@ function App() {
     if (!selIndustries.length || !selRegions.length) { setError('Bitte mindestens eine Branche und eine Region auswählen.'); return }
     startLoading('Unternehmen werden gesucht...'); setError('')
     try {
-      await fetchJson(`${API}/data/companies`, { method: 'DELETE' })
-      await fetchJson(`${API}/data/leads`, { method: 'DELETE' })
-      setCompanies([]); setLeads([])
       const params = new URLSearchParams()
       selIndustries.forEach(v => params.append('industries', v))
       selRegions.forEach(v => params.append('regions', v))
       selSizes.forEach(v => params.append('sizes', v))
       const r = await fetchJson(`${API}/prospecting/find-companies?${params.toString()}`, { method: 'POST' })
-      showSuccess(`${r.total || 0} Unternehmen gefunden`)
+      showSuccess(`${r.total || 0} neue Unternehmen gefunden (${companies.length + (r.total || 0)} gesamt)`, true)
       await loadCompanies()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+  const clearSearchResults = async () => {
+    if (!confirm('Alle Unternehmen und Kontakte aus der aktuellen Suche löschen?')) return
+    startLoading('Suchergebnisse werden gelöscht...'); setError('')
+    try {
+      await fetchJson(`${API}/data/companies`, { method: 'DELETE' })
+      await fetchJson(`${API}/data/leads`, { method: 'DELETE' })
+      setCompanies([]); setLeads([])
+      showSuccess('Suchergebnisse gelöscht')
     } catch (e) { setError(e.message) }
     stopLoading()
   }
@@ -164,9 +203,21 @@ function App() {
     catch (e) { setError(e.message) } stopLoading()
   }
   const findAllContacts = async () => {
-    startLoading('Alle Kontakte werden gesucht...'); setError('')
-    try { const r = await fetchJson(`${API}/prospecting/find-contacts-all`, { method: 'POST' }); showSuccess(`${r.total_new || 0} neue Kontakte`); await loadLeads() }
-    catch (e) { setError(e.message) } stopLoading()
+    if (!companies.length) return
+    startLoading(`Kontakte für ${companies.length} Unternehmen werden gesucht...`); setError('')
+    let totalNew = 0
+    let errors = 0
+    for (let i = 0; i < companies.length; i++) {
+      setLoadingProgress({ current: i + 1, total: companies.length })
+      setLoadingMsg(`Kontakte suchen: ${companies[i].name} (${i + 1}/${companies.length})...`)
+      try {
+        const r = await fetchJson(`${API}/prospecting/find-contacts/${companies[i].id}`, { method: 'POST' })
+        totalNew += (r.total || 0)
+      } catch { errors++ }
+    }
+    showSuccess(`${totalNew} neue Kontakte gefunden${errors ? ` (${errors} Fehler)` : ''}`, true)
+    await loadLeads()
+    stopLoading()
   }
   const verifyEmail = async (leadId) => {
     startLoading('E-Mail wird verifiziert...'); setError('')
@@ -196,14 +247,17 @@ function App() {
     catch (e) { setError(e.message) } stopLoading()
   }
   const addAllVerifiedToAddressBook = async () => {
-    startLoading('Verifizierte Kontakte werden ins Adressbuch übernommen...'); setError('')
-    const verified = leads.filter(l => l.email_verified)
-    let added = 0
-    for (const l of verified) {
-      try { await fetchJson(`${API}/data/address-book/from-lead/${l.id}`, { method: 'POST' }); added++ } catch {}
-    }
-    showSuccess(`${added} Kontakte ins Adressbuch übernommen`)
-    await loadAddressBook()
+    const verified = leads.filter(l => l.email_verified && !abEmails.has(l.email?.toLowerCase()))
+    if (!verified.length) { setError('Keine neuen verifizierten Kontakte zum Übernehmen.'); return }
+    startLoading(`${verified.length} verifizierte Kontakte werden ins Adressbuch übernommen...`); setError('')
+    try {
+      const r = await fetchJson(`${API}/data/address-book/from-leads-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: verified.map(l => l.id) })
+      })
+      showSuccess(`${r.added || 0} Kontakte ins Adressbuch übernommen${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      await loadAddressBook()
+    } catch (e) { setError(e.message) }
     stopLoading()
   }
   const removeFromAddressBook = async (entryId) => {
@@ -291,12 +345,14 @@ function App() {
     const verified = abSearchResult.contacts.filter(c => c.email_verified && !abEmails.has(c.email?.toLowerCase()))
     if (!verified.length) return
     startLoading(`${verified.length} verifizierte Kontakte werden ins Adressbuch übernommen...`); setError('')
-    let added = 0
-    for (const c of verified) {
-      try { await fetchJson(`${API}/data/address-book/from-lead/${c.id}`, { method: 'POST' }); added++ } catch {}
-    }
-    showSuccess(`${added} Kontakte ins Adressbuch übernommen`)
-    await loadAddressBook()
+    try {
+      const r = await fetchJson(`${API}/data/address-book/from-leads-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: verified.map(c => c.id) })
+      })
+      showSuccess(`${r.added || 0} Kontakte ins Adressbuch übernommen${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      await loadAddressBook()
+    } catch (e) { setError(e.message) }
     stopLoading()
   }
 
@@ -332,6 +388,25 @@ function App() {
   const unverifiedLeads = leads.filter(l => !l.email_verified && l.email)
   const verifiedLeads = leads.filter(l => l.email_verified)
   const abEmails = new Set(addressBook.map(a => a.email?.toLowerCase()))
+
+  // Filtered leads for search page
+  const filteredLeads = leads.filter(l => {
+    if (searchLeadsFilter === 'verified' && !l.email_verified) return false
+    if (searchLeadsFilter === 'unverified' && l.email_verified) return false
+    if (searchLeadsQuery) {
+      const q = searchLeadsQuery.toLowerCase()
+      return (l.name?.toLowerCase().includes(q) || l.company?.toLowerCase().includes(q) || l.email?.toLowerCase().includes(q) || l.title?.toLowerCase().includes(q))
+    }
+    return true
+  })
+
+  // Group leads by company for display
+  const leadsGrouped = filteredLeads.reduce((acc, l) => {
+    const key = l.company || 'Unbekannt'
+    if (!acc[key]) acc[key] = []
+    acc[key].push(l)
+    return acc
+  }, {})
 
   const CheckboxGroup = ({ label, items, selected, onToggle }) => (
     <div className="form-group">
@@ -369,11 +444,21 @@ function App() {
     if (campSelected.size === 0) { setError('Bitte mindestens einen Kontakt auswählen.'); return }
     startLoading('Kontakte werden importiert...'); setError('')
 
-    // Import selected address book contacts as leads
+    // Import selected address book contacts as leads (skip duplicates)
     const selectedContacts = activeContacts.filter(a => campSelected.has(a.id))
     const newLeadIds = []
 
+    // First: check existing leads to avoid duplicates
+    const existingLeads = leads.length > 0 ? leads : (await fetchJson(`${API}/data/leads`).then(r => r.data || []).catch(() => []))
+    const existingEmails = new Set(existingLeads.map(l => l.email?.toLowerCase()).filter(Boolean))
+
     for (const contact of selectedContacts) {
+      // If lead with same email already exists, reuse it
+      const existingLead = existingLeads.find(l => l.email?.toLowerCase() === contact.email?.toLowerCase())
+      if (existingLead) {
+        newLeadIds.push(existingLead.id)
+        continue
+      }
       try {
         const r = await fetchJson(`${API}/data/leads`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -681,8 +766,18 @@ function App() {
 
       <main className="main">
         {error && <div className="msg msg-error">{error} <button onClick={() => setError('')}>×</button></div>}
-        {successMsg && <div className="msg msg-success">{successMsg}</div>}
-        {loading && <div className="msg msg-loading"><span className="spinner" />{loadingMsg || 'Wird verarbeitet...'}</div>}
+        {successMsg && <div className="msg msg-success">{successMsg} <button onClick={() => setSuccessMsg('')} style={{background:'none',border:'none',color:'#166534',cursor:'pointer',fontSize:'1.1rem',marginLeft:'auto'}}>×</button></div>}
+        {loading && <div className="msg msg-loading">
+          <span className="spinner" />
+          <div style={{flex:1}}>
+            <div>{loadingMsg || 'Wird verarbeitet...'}</div>
+            {loadingProgress && (
+              <div className="progress-bar-container">
+                <div className="progress-bar-fill" style={{width: `${Math.round((loadingProgress.current / loadingProgress.total) * 100)}%`}} />
+              </div>
+            )}
+          </div>
+        </div>}
 
         {/* ═══ SUCHE ═══════════════════════════════════ */}
         {section === 'search' && (
@@ -694,8 +789,9 @@ function App() {
               <CheckboxGroup label="Regionen" items={regions} selected={selRegions} onToggle={v => toggle(selRegions, setSelRegions, v)} />
               <CheckboxGroup label="Größe (optional)" items={sizesOpts} selected={selSizes} onToggle={v => toggle(selSizes, setSelSizes, v)} />
               <div className="search-actions">
-                <button className="btn btn-primary" disabled={loading || !selIndustries.length || !selRegions.length} onClick={findCompanies}>Neue Suche ({selIndustries.length}×{selRegions.length})</button>
-                {(selIndustries.length > 0 || selRegions.length > 0 || selSizes.length > 0) && <button className="btn btn-ghost" onClick={() => { setSelIndustries([]); setSelRegions([]); setSelSizes([]) }}>Reset</button>}
+                <button className="btn btn-primary" disabled={loading || !selIndustries.length || !selRegions.length} onClick={findCompanies}>Suche starten ({selIndustries.length}×{selRegions.length})</button>
+                {(selIndustries.length > 0 || selRegions.length > 0 || selSizes.length > 0) && <button className="btn btn-ghost" onClick={() => { setSelIndustries([]); setSelRegions([]); setSelSizes([]) }}>Filter zurücksetzen</button>}
+                {(companies.length > 0 || leads.length > 0) && <button className="btn btn-ghost" style={{color:'#ef4444'}} onClick={clearSearchResults}>Alle Ergebnisse löschen</button>}
               </div>
             </div>
             {(companies.length > 0 || leads.length > 0) && (
@@ -722,30 +818,91 @@ function App() {
                       <div className="card-actions">
                         {leads.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('leads')}>CSV</button>}
                         {unverifiedLeads.length > 0 && <button className="btn btn-secondary" disabled={loading} onClick={verifyAllEmails}>Alle verifizieren ({unverifiedLeads.length})</button>}
-                        {verifiedLeads.length > 0 && <button className="btn btn-primary btn-sm" disabled={loading} onClick={addAllVerifiedToAddressBook}>Alle ins Adressbuch</button>}
+                        {verifiedLeads.filter(l => !abEmails.has(l.email?.toLowerCase())).length > 0 && <button className="btn btn-primary btn-sm" disabled={loading} onClick={addAllVerifiedToAddressBook}>Alle ins Adressbuch ({verifiedLeads.filter(l => !abEmails.has(l.email?.toLowerCase())).length})</button>}
                       </div>
                     </div>
-                    <div className="list">{leads.map(l => (
-                      <div key={l.id} className="list-item">
-                        <div className="list-main">
-                          <strong>{l.name}</strong>
-                          <span className="sub">{l.title} · {l.company}</span>
-                          <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}
-                            {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
-                            {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
-                            {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
-                          </span>
-                          {l.email_mx_host && <span className="sub" style={{fontSize:'0.65rem',color:'#9ca3af'}}>MX: {l.email_mx_host}</span>}
-                        </div>
-                        <div className="list-actions">
-                          {statusBadge(l.status)}
-                          {l.email && !l.email_verified && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verifizieren</button>}
-                          {l.email && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmailTechnical(l.id)} title="Technische SMTP/MX-Prüfung">SMTP</button>}
-                          {l.email_verified && !abEmails.has(l.email?.toLowerCase()) && <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => addToAddressBook(l.id)} title="Ins Adressbuch">📖+</button>}
-                          {l.email_verified && abEmails.has(l.email?.toLowerCase()) && <span className="badge badge-green">Im AB</span>}
+                    {/* Filter-Bar für Kontakte */}
+                    {leads.length > 0 && (
+                      <div className="leads-filter-bar">
+                        <input
+                          type="text"
+                          placeholder="Kontakte durchsuchen..."
+                          value={searchLeadsQuery}
+                          onChange={e => setSearchLeadsQuery(e.target.value)}
+                          className="leads-search-input"
+                        />
+                        <div className="filter-bar" style={{border:'none',padding:0,margin:0}}>
+                          <button className={`btn btn-sm ${searchLeadsFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('all')}>Alle ({leads.length})</button>
+                          <button className={`btn btn-sm ${searchLeadsFilter === 'verified' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('verified')}>✓ ({verifiedLeads.length})</button>
+                          <button className={`btn btn-sm ${searchLeadsFilter === 'unverified' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSearchLeadsFilter('unverified')}>Offen ({unverifiedLeads.length})</button>
+                          <button className={`btn btn-sm ${leadsGroupByCompany ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setLeadsGroupByCompany(!leadsGroupByCompany)} title="Nach Firma gruppieren">🏢</button>
                         </div>
                       </div>
-                    ))}{leads.length === 0 && <p className="empty">Keine Kontakte.</p>}</div>
+                    )}
+                    <div className="list">
+                      {leadsGroupByCompany && leads.length > 0 ? (
+                        Object.entries(leadsGrouped).sort(([,a],[,b]) => b.length - a.length).map(([company, companyLeads]) => (
+                          <div key={company} className="leads-company-group">
+                            <div className="leads-company-header">
+                              <strong>{company}</strong>
+                              <span className="sub">{companyLeads.length} Kontakte · {companyLeads.filter(l => l.email_verified).length} verifiziert</span>
+                            </div>
+                            {companyLeads.map(l => (
+                              <div key={l.id} className="list-item" style={{paddingLeft:'0.5rem'}}>
+                                <div className="list-main">
+                                  <strong>{l.name}</strong>
+                                  <span className="sub">{l.title}</span>
+                                  <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}
+                                    {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
+                                    {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
+                                    {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                                  </span>
+                                  {l.verification_notes && <span className="sub verify-notes" title={l.verification_notes}>📝 {l.verification_notes.split(' | ')[0]}</span>}
+                                </div>
+                                <div className="list-actions">
+                                  {l.email && !l.email_verified && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verifizieren</button>}
+                                  {l.email && l.email_verified && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)} title="Erneut verifizieren">↻</button>}
+                                  {l.email && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmailTechnical(l.id)} title="Technische SMTP/MX-Prüfung">SMTP</button>}
+                                  {l.email_verified && !abEmails.has(l.email?.toLowerCase()) && <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => addToAddressBook(l.id)} title="Ins Adressbuch">📖+</button>}
+                                  {l.email_verified && abEmails.has(l.email?.toLowerCase()) && <span className="badge badge-green">Im AB</span>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ))
+                      ) : (
+                        <>
+                          {filteredLeads.slice(0, leadsDisplayLimit).map(l => (
+                            <div key={l.id} className="list-item">
+                              <div className="list-main">
+                                <strong>{l.name}</strong>
+                                <span className="sub">{l.title} · {l.company}</span>
+                                <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}
+                                  {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
+                                  {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
+                                  {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                                </span>
+                                {l.verification_notes && <span className="sub verify-notes" title={l.verification_notes}>📝 {l.verification_notes.split(' | ')[0]}</span>}
+                              </div>
+                              <div className="list-actions">
+                                {l.email && !l.email_verified && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verifizieren</button>}
+                                {l.email && l.email_verified && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)} title="Erneut verifizieren">↻</button>}
+                                {l.email && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmailTechnical(l.id)} title="Technische SMTP/MX-Prüfung">SMTP</button>}
+                                {l.email_verified && !abEmails.has(l.email?.toLowerCase()) && <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => addToAddressBook(l.id)} title="Ins Adressbuch">📖+</button>}
+                                {l.email_verified && abEmails.has(l.email?.toLowerCase()) && <span className="badge badge-green">Im AB</span>}
+                              </div>
+                            </div>
+                          ))}
+                          {filteredLeads.length > leadsDisplayLimit && (
+                            <button className="btn btn-secondary" style={{margin:'0.5rem auto',display:'block'}} onClick={() => setLeadsDisplayLimit(prev => prev + 50)}>
+                              Weitere {Math.min(50, filteredLeads.length - leadsDisplayLimit)} von {filteredLeads.length - leadsDisplayLimit} anzeigen
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {leads.length === 0 && <p className="empty">Keine Kontakte.</p>}
+                      {leads.length > 0 && filteredLeads.length === 0 && <p className="empty">Keine Kontakte für diesen Filter.</p>}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -821,7 +978,7 @@ function App() {
                               ? <span className="badge badge-green">Im Adressbuch</span>
                               : !c.email
                                 ? <span className="badge badge-gray">Keine E-Mail</span>
-                                : <span className="badge badge-yellow">Nicht verifiziert</span>
+                                : <span className="badge badge-yellow">Verifizierung ausstehend</span>
                           }
                         </div>
                       </div>
@@ -837,6 +994,11 @@ function App() {
               <div className="card-header">
                 <h2>Kontakte ({addressBook.length})</h2>
                 <div className="card-actions">
+                  {addressBook.filter(a => (a.contact_status || 'active') === 'active' && a.email).length > 0 && (
+                    <button className="btn btn-secondary" onClick={() => { setSection('campaign'); setCampStep(1) }}>
+                      ✉ Kampagne ({addressBook.filter(a => (a.contact_status || 'active') === 'active' && a.email).length})
+                    </button>
+                  )}
                   {addressBook.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('address-book')}>CSV</button>}
                   <button className="btn btn-primary" onClick={() => setShowAddForm(!showAddForm)}>{showAddForm ? 'Abbrechen' : '+ Kontakt'}</button>
                 </div>
@@ -1229,10 +1391,26 @@ function App() {
             <div className="card">
               <h2>Post generieren</h2>
               <div style={{display:'flex',gap:'0.5rem',alignItems:'end',flexWrap:'wrap'}}>
-                <div className="form-group" style={{flex:1,minWidth:'150px'}}><label>Thema</label>
-                  <select id="postTopic"><option value="Regulatory Update">Regulatory Update</option><option value="Compliance Tip">Compliance Tip</option><option value="Industry Insight">Industry Insight</option><option value="Product Feature">Product Feature</option><option value="Thought Leadership">Thought Leadership</option><option value="Case Study">Case Study</option></select>
+                <div className="form-group" style={{flex:'0 0 180px'}}><label>Kategorie</label>
+                  <select id="postTopic" onChange={e => { if (e.target.value !== '__custom__') document.getElementById('postCustomTopic').value = '' }}>
+                    <option value="Regulatory Update">Regulatory Update</option>
+                    <option value="Compliance Tip">Compliance Tip</option>
+                    <option value="Industry Insight">Industry Insight</option>
+                    <option value="Product Feature">Product Feature</option>
+                    <option value="Thought Leadership">Thought Leadership</option>
+                    <option value="Case Study">Case Study</option>
+                    <option value="__custom__">Eigenes Thema...</option>
+                  </select>
                 </div>
-                <button className="btn btn-primary" disabled={loading} onClick={() => generatePost(document.getElementById('postTopic').value, 'LinkedIn')}>Generieren</button>
+                <div className="form-group" style={{flex:1,minWidth:'200px'}}><label>Eigenes Thema (optional)</label>
+                  <input id="postCustomTopic" placeholder="z.B. DORA Deadline März 2026, Digital Euro Update, NIS2..." onFocus={() => { document.getElementById('postTopic').value = '__custom__' }} />
+                </div>
+                <button className="btn btn-primary" disabled={loading} onClick={() => {
+                  const sel = document.getElementById('postTopic').value
+                  const custom = document.getElementById('postCustomTopic').value.trim()
+                  const topic = sel === '__custom__' && custom ? custom : sel === '__custom__' ? 'Regulatory Update' : sel
+                  generatePost(topic, 'LinkedIn')
+                }}>Generieren</button>
               </div>
             </div>
             <div className="card"><h2>Posts ({posts.length})</h2>

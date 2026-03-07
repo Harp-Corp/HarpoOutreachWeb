@@ -311,6 +311,41 @@ async def add_lead_to_address_book(lead_id: UUID, db: Session = Depends(get_db))
     return {"success": True, "data": db_svc.address_book_to_response(entry)}
 
 
+@router.post("/address-book/from-leads-batch")
+async def add_leads_to_address_book_batch(data: dict, db: Session = Depends(get_db)):
+    """Batch-add multiple verified leads to the address book in one request."""
+    lead_ids = data.get("lead_ids", [])
+    if not lead_ids:
+        raise HTTPException(400, "Keine Lead-IDs angegeben.")
+    added = 0
+    skipped = 0
+    for lid in lead_ids:
+        try:
+            lead = db_svc.get_lead(db, UUID(str(lid)))
+            if not lead or not lead.email_verified:
+                skipped += 1
+                continue
+            if db_svc.address_book_exists(db, lead.email):
+                skipped += 1
+                continue
+            db_svc.save_address_book_entry(db, {
+                "id": uuid4(),
+                "name": lead.name,
+                "title": lead.title,
+                "company": lead.company,
+                "email": lead.email,
+                "email_verified": True,
+                "linkedin_url": lead.linkedin_url,
+                "phone": lead.phone or "",
+                "notes": lead.verification_notes or "",
+                "source": "verified",
+            })
+            added += 1
+        except Exception:
+            skipped += 1
+    return {"success": True, "added": added, "skipped": skipped}
+
+
 @router.put("/address-book/{entry_id}")
 async def update_address_book_entry(entry_id: UUID, data: dict, db: Session = Depends(get_db)):
     data["id"] = entry_id

@@ -70,8 +70,51 @@ def delete_company(db: Session, company_id: UUID):
         db.commit()
 
 
+import re as _re
+
+def _normalize_company_name(name: str) -> str:
+    """Normalize a company name for fuzzy matching.
+    Strips legal suffixes (AG, GmbH, SE, etc.), parenthetical remarks,
+    and extra whitespace to get the core name."""
+    n = name.strip()
+    # Remove parenthetical content: "Porsche Aktiengesellschaft (Porsche AG)" -> "Porsche Aktiengesellschaft"
+    n = _re.sub(r'\s*\([^)]*\)\s*', ' ', n)
+    # Remove common legal suffixes
+    suffixes = [
+        r'\bAktiengesellschaft\b', r'\bAG\b', r'\bSE\b', r'\bGmbH\b',
+        r'\bGmbH\s*&\s*Co\.?\s*KG\b', r'\bCo\.?\s*KG\b', r'\bKG\b',
+        r'\bKGaA\b', r'\bS\.?A\.?\b', r'\bS\.?p\.?A\.?\b', r'\bB\.?V\.?\b',
+        r'\bN\.?V\.?\b', r'\bLtd\.?\b', r'\bLLC\b', r'\bInc\.?\b',
+        r'\bCorp\.?\b', r'\bPLC\b', r'\be\.?\s*V\.?\b',
+        r'\bDr\.\s*Ing\.\s*h\.?\s*c\.?\s*F\.?\b',  # "Dr. Ing. h.c. F."
+    ]
+    for s in suffixes:
+        n = _re.sub(s, '', n, flags=_re.IGNORECASE)
+    # Clean up
+    n = _re.sub(r'[\s,\.]+$', '', n)  # trailing dots/commas/spaces
+    n = _re.sub(r'\s+', ' ', n).strip()
+    return n.lower()
+
+
 def company_exists(db: Session, name: str) -> bool:
-    return db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).count() > 0
+    """Check if company already exists using fuzzy name matching."""
+    # Fast exact match first
+    if db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).count() > 0:
+        return True
+    # Fuzzy: normalize and compare
+    norm_new = _normalize_company_name(name)
+    if len(norm_new) < 3:
+        return False
+    all_companies = db.query(CompanyDB).all()
+    for c in all_companies:
+        norm_existing = _normalize_company_name(c.name)
+        if norm_existing == norm_new:
+            return True
+        # One contains the other (e.g. "Porsche" vs "Porsche Aktiengesellschaft")
+        if len(norm_existing) >= 3 and len(norm_new) >= 3:
+            if norm_existing in norm_new or norm_new in norm_existing:
+                return True
+    return False
 
 
 def get_company_by_name(db: Session, name: str) -> Optional[CompanyDB]:
@@ -79,6 +122,16 @@ def get_company_by_name(db: Session, name: str) -> Optional[CompanyDB]:
     exact = db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).first()
     if exact:
         return exact
+    # Try fuzzy match with normalized names
+    norm_search = _normalize_company_name(name)
+    if len(norm_search) >= 3:
+        all_companies = db.query(CompanyDB).all()
+        for c in all_companies:
+            norm_c = _normalize_company_name(c.name)
+            if norm_c == norm_search:
+                return c
+            if len(norm_c) >= 3 and (norm_c in norm_search or norm_search in norm_c):
+                return c
     # Try fuzzy match: search term contained in company name or vice versa
     like_match = db.query(CompanyDB).filter(
         func.lower(CompanyDB.name).contains(name.lower())

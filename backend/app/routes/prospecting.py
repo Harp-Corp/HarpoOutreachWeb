@@ -256,7 +256,9 @@ async def search_company(
 
 def _slim_lead_response(lead: dict) -> dict:
     """Return only the fields needed for the address book search results.
-    Avoids sending huge verification_notes in the response."""
+    Includes a shortened verification summary."""
+    notes = lead.get("verification_notes", "") or ""
+    # Truncate to 300 chars for the slim response
     return {
         "id": lead.get("id"),
         "name": lead.get("name"),
@@ -269,6 +271,7 @@ def _slim_lead_response(lead: dict) -> dict:
         "linkedin_url": lead.get("linkedin_url"),
         "email_risk_level": lead.get("email_risk_level"),
         "email_smtp_verified": lead.get("email_smtp_verified"),
+        "verification_notes": notes[:300] if notes else "",
     }
 
 
