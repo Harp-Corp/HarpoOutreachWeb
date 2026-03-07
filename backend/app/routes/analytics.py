@@ -1,4 +1,4 @@
-# Analytics routes – email tracking, reply detection, campaign analytics
+# Analytics routes – email tracking, reply detection, campaign analytics, funnel metrics
 from __future__ import annotations
 
 import json
@@ -60,6 +60,12 @@ async def list_sent_emails(db: Session = Depends(get_db)):
             "follow_up_body": follow_up_data.get("body", ""),
             "reply_received": lead.reply_received or "",
             "opted_out": lead.opted_out,
+            # New: technical verification data
+            "email_risk_level": getattr(lead, "email_risk_level", "unknown"),
+            "email_smtp_verified": getattr(lead, "email_smtp_verified", False),
+            # New: campaign sequence info
+            "campaign_current_step": getattr(lead, "campaign_current_step", 0),
+            "campaign_paused": getattr(lead, "campaign_paused", False),
         })
 
     # Sort by sent date descending
@@ -151,12 +157,19 @@ async def check_replies(db: Session = Depends(get_db)):
                 unsubscribes_found += 1
                 # Add to blocklist
                 db_svc.add_to_blocklist(db, matched_lead.email, reason="Unsubscribe-Antwort")
+                # Auto-pause campaign if active
+                if getattr(matched_lead, 'campaign_sequence_json', None):
+                    matched_lead.campaign_paused = True
             else:
                 if not matched_lead.reply_received:
                     matched_lead.status = "Replied"
                 matched_lead.reply_received = msg.get("body", msg.get("snippet", ""))[:1000]
                 replies_found += 1
+                # Auto-pause campaign if active (reply received)
+                if getattr(matched_lead, 'campaign_sequence_json', None):
+                    matched_lead.campaign_paused = True
 
+            matched_lead.last_reply_check = datetime.utcnow()
             matched_lead.updated_at = datetime.utcnow()
             results.append({
                 "lead_id": str(matched_lead.id),
@@ -209,21 +222,47 @@ async def check_replies(db: Session = Depends(get_db)):
     }
 
 
-# ─── Campaign Summary Stats ─────────────────────────────────────
+# ─── Campaign Summary Stats (Enhanced Funnel) ───────────────────
 
 @router.get("/summary")
 async def analytics_summary(db: Session = Depends(get_db)):
-    """Get aggregated analytics: sent, delivered, bounced, replied, unsubscribed."""
+    """Get aggregated analytics: full funnel view with sent/replied/bounced ratios."""
     leads = db_svc.load_leads(db)
 
+    total_leads = len(leads)
     total_sent = 0
     total_delivered = 0
     total_bounced = 0
     total_replied = 0
     total_unsubscribed = 0
     total_follow_ups = 0
+    total_verified = 0
+    total_smtp_verified = 0
+
+    # Campaign sequence stats
+    total_in_campaign = 0
+    total_campaign_steps_sent = 0
+    total_campaign_steps_pending = 0
+    total_campaign_paused = 0
+
+    # By status distribution
+    by_status = {}
+    by_risk_level = {"low": 0, "medium": 0, "high": 0, "invalid": 0, "unknown": 0}
 
     for lead in leads:
+        # Status distribution
+        by_status[lead.status] = by_status.get(lead.status, 0) + 1
+
+        # Verification stats
+        if lead.email_verified:
+            total_verified += 1
+        if getattr(lead, "email_smtp_verified", False):
+            total_smtp_verified += 1
+        risk = getattr(lead, "email_risk_level", "unknown") or "unknown"
+        if risk in by_risk_level:
+            by_risk_level[risk] += 1
+
+        # Sent / delivery stats
         if lead.date_email_sent:
             total_sent += 1
             if lead.delivery_status == "Delivered":
@@ -237,18 +276,111 @@ async def analytics_summary(db: Session = Depends(get_db)):
             if lead.date_follow_up_sent:
                 total_follow_ups += 1
 
+        # Campaign stats
+        if getattr(lead, "campaign_sequence_json", None):
+            total_in_campaign += 1
+            if getattr(lead, "campaign_paused", False):
+                total_campaign_paused += 1
+            try:
+                seq = json.loads(lead.campaign_sequence_json)
+                for s in seq:
+                    if s.get("status") == "sent":
+                        total_campaign_steps_sent += 1
+                    elif s.get("status") in ("pending", "drafted", "approved"):
+                        total_campaign_steps_pending += 1
+            except Exception:
+                pass
+
+    # Calculated rates
     reply_rate = round((total_replied / total_sent * 100), 1) if total_sent > 0 else 0.0
     bounce_rate = round((total_bounced / total_sent * 100), 1) if total_sent > 0 else 0.0
+    unsub_rate = round((total_unsubscribed / total_sent * 100), 1) if total_sent > 0 else 0.0
+    delivery_rate = round((total_delivered / total_sent * 100), 1) if total_sent > 0 else 0.0
+    # Effective rate: replies / (sent - bounced)
+    effective_base = total_sent - total_bounced
+    effective_reply_rate = round((total_replied / effective_base * 100), 1) if effective_base > 0 else 0.0
 
     return {
         "data": {
+            # Core funnel
+            "total_leads": total_leads,
             "total_sent": total_sent,
             "total_delivered": total_delivered,
             "total_bounced": total_bounced,
             "total_replied": total_replied,
             "total_unsubscribed": total_unsubscribed,
             "total_follow_ups": total_follow_ups,
+            # Rates
             "reply_rate": reply_rate,
             "bounce_rate": bounce_rate,
+            "unsub_rate": unsub_rate,
+            "delivery_rate": delivery_rate,
+            "effective_reply_rate": effective_reply_rate,
+            # Verification
+            "total_verified": total_verified,
+            "total_smtp_verified": total_smtp_verified,
+            "by_risk_level": by_risk_level,
+            # Campaign sequences
+            "total_in_campaign": total_in_campaign,
+            "total_campaign_steps_sent": total_campaign_steps_sent,
+            "total_campaign_steps_pending": total_campaign_steps_pending,
+            "total_campaign_paused": total_campaign_paused,
+            # Status distribution
+            "by_status": by_status,
+        }
+    }
+
+
+# ─── Funnel View (Detailed Pipeline) ────────────────────────────
+
+@router.get("/funnel")
+async def analytics_funnel(db: Session = Depends(get_db)):
+    """Detailed funnel view: leads → verified → contacted → replied → converted."""
+    leads = db_svc.load_leads(db)
+
+    stages = {
+        "identified": 0,      # all leads
+        "verified": 0,        # email verified
+        "smtp_verified": 0,   # SMTP-level verified
+        "email_drafted": 0,   # email drafted
+        "email_sent": 0,      # email sent
+        "follow_up_sent": 0,  # follow-up sent
+        "replied": 0,         # got a reply
+        "opted_out": 0,       # unsubscribed
+        "bounced": 0,         # bounced
+    }
+
+    for lead in leads:
+        stages["identified"] += 1
+        if lead.email_verified:
+            stages["verified"] += 1
+        if getattr(lead, "email_smtp_verified", False):
+            stages["smtp_verified"] += 1
+        if lead.drafted_email_json:
+            stages["email_drafted"] += 1
+        if lead.date_email_sent:
+            stages["email_sent"] += 1
+        if lead.date_follow_up_sent:
+            stages["follow_up_sent"] += 1
+        if lead.reply_received and not lead.reply_received.startswith("[UNSUBSCRIBE]"):
+            stages["replied"] += 1
+        if lead.opted_out:
+            stages["opted_out"] += 1
+        if lead.delivery_status == "Bounced":
+            stages["bounced"] += 1
+
+    # Conversion rates between stages
+    conversions = {}
+    if stages["identified"] > 0:
+        conversions["identified_to_verified"] = round(stages["verified"] / stages["identified"] * 100, 1)
+    if stages["verified"] > 0:
+        conversions["verified_to_sent"] = round(stages["email_sent"] / stages["verified"] * 100, 1)
+    if stages["email_sent"] > 0:
+        conversions["sent_to_replied"] = round(stages["replied"] / stages["email_sent"] * 100, 1)
+
+    return {
+        "data": {
+            "stages": stages,
+            "conversions": conversions,
         }
     }

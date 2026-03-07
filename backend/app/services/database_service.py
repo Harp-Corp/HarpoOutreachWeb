@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..models.db import (
     AddressBookDB,
     BlocklistDB,
+    CampaignTemplateDB,
     CompanyDB,
     LeadDB,
     SettingsDB,
@@ -103,6 +104,16 @@ def _lead_to_db(lead_id: UUID, data: dict) -> dict:
         "opted_out": "opted_out",
         "opt_out_date": "opt_out_date",
         "delivery_status": "delivery_status",
+        # New: email verification fields
+        "email_risk_level": "email_risk_level",
+        "email_smtp_verified": "email_smtp_verified",
+        "email_is_catch_all": "email_is_catch_all",
+        "email_mx_host": "email_mx_host",
+        # New: campaign fields
+        "campaign_sequence_json": "campaign_sequence_json",
+        "campaign_current_step": "campaign_current_step",
+        "campaign_paused": "campaign_paused",
+        "last_reply_check": "last_reply_check",
     }
     for src, dst in field_map.items():
         if src in data:
@@ -195,6 +206,15 @@ def lead_db_to_response(lead: LeadDB) -> dict:
             follow_up = json.loads(lead.follow_up_email_json)
         except Exception:
             pass
+
+    # Parse campaign sequence
+    campaign_sequence = None
+    if getattr(lead, "campaign_sequence_json", None):
+        try:
+            campaign_sequence = json.loads(lead.campaign_sequence_json)
+        except Exception:
+            pass
+
     return {
         "id": str(lead.id),
         "name": lead.name,
@@ -219,6 +239,16 @@ def lead_db_to_response(lead: LeadDB) -> dict:
         "opted_out": lead.opted_out,
         "opt_out_date": lead.opt_out_date.isoformat() if lead.opt_out_date else None,
         "delivery_status": lead.delivery_status,
+        # New: technical email verification
+        "email_risk_level": getattr(lead, "email_risk_level", "unknown") or "unknown",
+        "email_smtp_verified": getattr(lead, "email_smtp_verified", False),
+        "email_is_catch_all": getattr(lead, "email_is_catch_all", False),
+        "email_mx_host": getattr(lead, "email_mx_host", ""),
+        # New: campaign sequences
+        "campaign_sequence": campaign_sequence,
+        "campaign_current_step": getattr(lead, "campaign_current_step", 0),
+        "campaign_paused": getattr(lead, "campaign_paused", False),
+        "last_reply_check": lead.last_reply_check.isoformat() if getattr(lead, "last_reply_check", None) else None,
     }
 
 
@@ -425,6 +455,16 @@ def get_all_settings(db: Session) -> dict:
     return result
 
 
+# ─── Campaign Templates ─────────────────────────────────────────
+
+def load_campaign_templates(db: Session) -> list[CampaignTemplateDB]:
+    return db.query(CampaignTemplateDB).order_by(CampaignTemplateDB.created_at).all()
+
+
+def get_campaign_template(db: Session, template_id: UUID) -> Optional[CampaignTemplateDB]:
+    return db.get(CampaignTemplateDB, template_id)
+
+
 # ─── Dashboard Stats ─────────────────────────────────────────────
 
 def get_dashboard_stats(db: Session) -> dict:
@@ -448,6 +488,9 @@ def get_dashboard_stats(db: Session) -> dict:
     # Address book count
     ab_count = db.query(AddressBookDB).count()
 
+    # Campaign counts
+    in_campaign = sum(1 for l in leads if getattr(l, "campaign_sequence_json", None))
+
     return {
         "total_leads": total,
         "emails_sent": sent,
@@ -456,6 +499,5 @@ def get_dashboard_stats(db: Session) -> dict:
         "leads_by_status": by_status,
         "leads_by_industry": by_industry,
         "address_book_count": ab_count,
+        "in_campaign": in_campaign,
     }
-
-

@@ -11,6 +11,7 @@ function App() {
   const [addressBook, setAddressBook] = useState([])
   const [sentEmails, setSentEmails] = useState([])
   const [analyticsSummary, setAnalyticsSummary] = useState(null)
+  const [analyticsFunnel, setAnalyticsFunnel] = useState(null)
   const [authStatus, setAuthStatus] = useState(null)
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
@@ -31,6 +32,11 @@ function App() {
   const [campDraftBody, setCampDraftBody] = useState('')
   const [campSendSelected, setCampSendSelected] = useState(new Set()) // step 4: which to send
   const [campDrafting, setCampDrafting] = useState(false) // drafting in progress
+
+  // Campaign Sequences state
+  const [seqCampaigns, setSeqCampaigns] = useState([])
+  const [seqTemplates, setSeqTemplates] = useState([])
+  const [seqView, setSeqView] = useState('wizard') // 'wizard' | 'sequences'
 
   const [selIndustries, setSelIndustries] = useState([])
   const [selRegions, setSelRegions] = useState([])
@@ -74,16 +80,19 @@ function App() {
   const loadAddressBook = useCallback(async () => { try { const r = await fetchJson(`${API}/data/address-book`); setAddressBook(r.data || []) } catch {} }, [])
   const loadSentEmails = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/sent-emails`); setSentEmails(r.data || []) } catch {} }, [])
   const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
+  const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch {} }, [])
   const loadAuthStatus = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {} }, [])
+  const loadSeqCampaigns = useCallback(async () => { try { const r = await fetchJson(`${API}/campaigns/status`); setSeqCampaigns(r.data || []) } catch {} }, [])
+  const loadSeqTemplates = useCallback(async () => { try { const r = await fetchJson(`${API}/campaigns/templates`); setSeqTemplates(r.data || []) } catch {} }, [])
 
   useEffect(() => { loadDashboard(); loadAuthStatus() }, [loadDashboard, loadAuthStatus])
   useEffect(() => {
     setError(''); setSuccessMsg('')
     if (section === 'search') { loadCompanies(); loadLeads() }
     else if (section === 'addressbook') { loadAddressBook() }
-    else if (section === 'campaign') { loadAddressBook(); loadLeads() }
+    else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts() }
-    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary() }
+    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
 
@@ -98,6 +107,19 @@ function App() {
 
   const toggle = (arr, setArr, val) => setArr(prev => prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val])
 
+  // ─── Risk Level Badge ──────────────────────────────────
+  const riskBadge = (level) => {
+    const map = {
+      'low': { cls: 'badge-green', label: 'Niedrig' },
+      'medium': { cls: 'badge-yellow', label: 'Mittel' },
+      'high': { cls: 'badge-red', label: 'Hoch' },
+      'invalid': { cls: 'badge-red', label: 'Ungültig' },
+      'unknown': { cls: 'badge-gray', label: '—' },
+    }
+    const m = map[level] || map['unknown']
+    return <span className={`badge ${m.cls}`} title={`E-Mail-Risiko: ${level}`}>{m.label}</span>
+  }
+
   // ─── Analytics Actions ─────────────────────────────────
   const checkReplies = async () => {
     setCheckingReplies(true); setReplyCheckResult(null); setError('')
@@ -107,6 +129,7 @@ function App() {
       showSuccess(`Prüfung abgeschlossen: ${r.replies || 0} Antworten, ${r.unsubscribes || 0} Abmeldungen, ${r.bounces || 0} Bounces`)
       await loadSentEmails()
       await loadAnalyticsSummary()
+      await loadAnalyticsFunnel()
     } catch (e) { setError(e.message) }
     setCheckingReplies(false)
   }
@@ -151,6 +174,18 @@ function App() {
     try { const r = await fetchJson(`${API}/prospecting/verify-all`, { method: 'POST' }); showSuccess(`${r.verified || 0}/${r.total || 0} verifiziert`); await loadLeads() }
     catch (e) { setError(e.message) } stopLoading()
   }
+  // New: Technical SMTP verification
+  const verifyEmailTechnical = async (leadId) => {
+    startLoading('Technische E-Mail-Verifizierung (SMTP/MX)...'); setError('')
+    try {
+      const r = await fetchJson(`${API}/prospecting/verify-email-technical/${leadId}`, { method: 'POST' })
+      const d = r.data || {}
+      showSuccess(`${d.email}: Risiko ${d.risk_level} (${d.verification_method})`)
+      await loadLeads()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
   const addToAddressBook = async (leadId) => {
     startLoading('Wird ins Adressbuch übernommen...'); setError('')
     try { await fetchJson(`${API}/data/address-book/from-lead/${leadId}`, { method: 'POST' }); showSuccess('Ins Adressbuch übernommen'); await loadAddressBook() }
@@ -469,6 +504,51 @@ function App() {
     stopLoading()
   }
 
+  // ─── Campaign Sequence Functions ──────────────────────────
+  const seqDraftNext = async (leadId) => {
+    startLoading('Nächster Sequenz-Schritt wird erstellt...'); setError('')
+    try {
+      const r = await fetchJson(`${API}/campaigns/draft-next/${leadId}`, { method: 'POST' })
+      showSuccess(`Schritt ${r.step} (${r.type}) erstellt`)
+      await loadSeqCampaigns()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+  const seqApproveStep = async (leadId, stepNum) => {
+    try {
+      await fetchJson(`${API}/campaigns/approve-step/${leadId}/${stepNum}`, { method: 'POST' })
+      showSuccess('Schritt freigegeben')
+      await loadSeqCampaigns()
+    } catch (e) { setError(e.message) }
+  }
+  const seqPause = async (leadId) => {
+    try { await fetchJson(`${API}/campaigns/pause/${leadId}`, { method: 'POST' }); await loadSeqCampaigns() } catch (e) { setError(e.message) }
+  }
+  const seqResume = async (leadId) => {
+    try { await fetchJson(`${API}/campaigns/resume/${leadId}`, { method: 'POST' }); await loadSeqCampaigns() } catch (e) { setError(e.message) }
+  }
+  const seqStartCampaign = async (leadIds) => {
+    startLoading('Kampagnen-Sequenz wird gestartet...'); setError('')
+    try {
+      const r = await fetchJson(`${API}/campaigns/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: leadIds })
+      })
+      showSuccess(`${r.started} Sequenzen gestartet${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      await loadSeqCampaigns()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+  const seqDraftAllNext = async () => {
+    startLoading('Alle nächsten Schritte werden erstellt...'); setError('')
+    try {
+      const r = await fetchJson(`${API}/campaigns/draft-all-next`, { method: 'POST' })
+      showSuccess(`${r.drafted} Entwürfe erstellt${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      await loadSeqCampaigns()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
   const menuItems = [
     { id: 'search', icon: '🔍', label: 'Suche' },
     { id: 'addressbook', icon: '📖', label: 'Adressbuch' },
@@ -497,6 +577,17 @@ function App() {
         ))}
       </div>
     )
+  }
+
+  // Sequence step type label
+  const stepTypeLabel = (type) => {
+    const map = { 'initial': 'Initial', 'follow_up_1': 'Follow-Up 1', 'follow_up_2': 'Follow-Up 2', 'follow_up_3': 'Follow-Up 3', 'breakup': 'Breakup' }
+    return map[type] || type
+  }
+  const stepStatusBadge = (status) => {
+    const map = { 'pending': 'badge-gray', 'drafted': 'badge-yellow', 'approved': 'badge-blue', 'sent': 'badge-green', 'skipped': 'badge-gray' }
+    const labels = { 'pending': 'Ausstehend', 'drafted': 'Entwurf', 'approved': 'Freigegeben', 'sent': 'Gesendet', 'skipped': 'Übersprungen' }
+    return <span className={`badge ${map[status] || 'badge-gray'}`}>{labels[status] || status}</span>
   }
 
   return (
@@ -570,11 +661,17 @@ function App() {
                         <div className="list-main">
                           <strong>{l.name}</strong>
                           <span className="sub">{l.title} · {l.company}</span>
-                          <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}</span>
+                          <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}
+                            {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
+                            {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
+                            {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                          </span>
+                          {l.email_mx_host && <span className="sub" style={{fontSize:'0.65rem',color:'#9ca3af'}}>MX: {l.email_mx_host}</span>}
                         </div>
                         <div className="list-actions">
                           {statusBadge(l.status)}
                           {l.email && !l.email_verified && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => verifyEmail(l.id)}>Verifizieren</button>}
+                          {l.email && <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => verifyEmailTechnical(l.id)} title="Technische SMTP/MX-Prüfung">SMTP</button>}
                           {l.email_verified && !abEmails.has(l.email?.toLowerCase()) && <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => addToAddressBook(l.id)} title="Ins Adressbuch">📖+</button>}
                           {l.email_verified && abEmails.has(l.email?.toLowerCase()) && <span className="badge badge-green">Im AB</span>}
                         </div>
@@ -656,228 +753,326 @@ function App() {
           </div>
         )}
 
-        {/* ═══ KAMPAGNE (Wizard) ═══════════════════════ */}
+        {/* ═══ KAMPAGNE (Wizard + Sequences) ═══════════════════════ */}
         {section === 'campaign' && (
           <div key="campaign">
             <h1 className="page-title">E-Mail-Kampagne</h1>
             <p className="page-desc">Kontakte auswählen → Personalisierte E-Mails erstellen → Freigeben → Versenden</p>
 
-            <WizardSteps />
+            {/* View Toggle */}
+            <div className="filter-bar" style={{marginBottom:'1rem'}}>
+              <button className={`btn btn-sm ${seqView === 'wizard' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSeqView('wizard')}>Kampagnen-Wizard</button>
+              <button className={`btn btn-sm ${seqView === 'sequences' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSeqView('sequences')}>
+                Sequenzen {seqCampaigns.length > 0 && `(${seqCampaigns.length})`}
+              </button>
+            </div>
 
-            {/* ── Step 1: Kontakte auswählen ── */}
-            {campStep === 1 && (
-              <div className="card">
-                <div className="card-header">
-                  <h2>Kontakte aus Adressbuch auswählen ({activeContacts.length} nutzbar)</h2>
-                  <div className="card-actions">
-                    <button className="btn btn-ghost btn-sm" onClick={toggleCampSelectAll}>
-                      {campSelected.size === activeContacts.length ? 'Keine' : 'Alle'} auswählen
-                    </button>
-                  </div>
-                </div>
-                {activeContacts.length === 0 ? (
-                  <p className="empty">Keine nutzbaren Kontakte im Adressbuch. Bitte zuerst über die Suche Kontakte verifizieren und ins Adressbuch übernehmen.</p>
-                ) : (
-                  <>
-                    <div className="list">
-                      {activeContacts.map(a => (
-                        <div key={a.id} className={`list-item camp-select-item ${campSelected.has(a.id) ? 'camp-selected' : ''}`} onClick={() => toggleCampSelect(a.id)}>
-                          <div className="camp-checkbox">
-                            <input type="checkbox" checked={campSelected.has(a.id)} onChange={() => toggleCampSelect(a.id)} onClick={e => e.stopPropagation()} />
-                          </div>
-                          <div className="list-main">
-                            <strong>{a.name}</strong>
-                            <span className="sub">{a.title} · {a.company}</span>
-                            <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="wizard-actions">
-                      <span className="hint">{campSelected.size} von {activeContacts.length} ausgewählt</span>
-                      <button className="btn btn-primary" disabled={loading || campSelected.size === 0} onClick={campGoToStep2}>
-                        Weiter — Entwürfe erstellen
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+            {seqView === 'wizard' && (
+              <>
+                <WizardSteps />
 
-            {/* ── Step 2: Entwürfe bearbeiten (two-column) ── */}
-            {campStep === 2 && (
-              <div className="camp-two-col">
-                {/* Left: Contact list */}
-                <div className="camp-col-left">
+                {/* ── Step 1: Kontakte auswählen ── */}
+                {campStep === 1 && (
                   <div className="card">
-                    <h2>Kontakte ({campLeads.length})</h2>
-                    <div className="list">
-                      {campLeads.map(l => (
-                        <div key={l.id} className={`list-item camp-lead-item ${campActiveLeadId === l.id ? 'camp-lead-active' : ''}`} onClick={() => campSelectLead(l)}>
-                          <div className="list-main">
-                            <strong>{l.name}</strong>
-                            <span className="sub">{l.title} · {l.company}</span>
-                          </div>
-                          <div className="list-actions">
-                            {l.drafted_email ? <span className="badge badge-yellow">Entwurf</span> : <span className="badge badge-gray">Kein Entwurf</span>}
-                          </div>
-                        </div>
-                      ))}
+                    <div className="card-header">
+                      <h2>Kontakte aus Adressbuch auswählen ({activeContacts.length} nutzbar)</h2>
+                      <div className="card-actions">
+                        <button className="btn btn-ghost btn-sm" onClick={toggleCampSelectAll}>
+                          {campSelected.size === activeContacts.length ? 'Keine' : 'Alle'} auswählen
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* Right: Email editor */}
-                <div className="camp-col-right">
-                  <div className="card">
-                    {campActiveLeadId ? (
-                      <>
-                        {(() => {
-                          const activeLead = campLeads.find(l => l.id === campActiveLeadId)
-                          return activeLead ? (
-                            <>
-                              <div className="card-header">
-                                <h2>E-Mail an {activeLead.name}</h2>
-                                <div className="card-actions">
-                                  <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => campRegenerateDraft(activeLead.id)}>Neu generieren</button>
-                                </div>
-                              </div>
-                              <div className="camp-recipient">
-                                <span className="sub">An: {activeLead.email} · {activeLead.title} · {activeLead.company}</span>
-                              </div>
-                              {activeLead.drafted_email ? (
-                                <div className="camp-editor">
-                                  <div className="form-group">
-                                    <label>Betreff</label>
-                                    <input value={campDraftSubject} onChange={e => setCampDraftSubject(e.target.value)} />
-                                  </div>
-                                  <div className="form-group">
-                                    <label>Nachricht</label>
-                                    <textarea className="camp-textarea" value={campDraftBody} onChange={e => setCampDraftBody(e.target.value)} rows={14} />
-                                  </div>
-                                  <button className="btn btn-secondary" disabled={loading} onClick={campSaveDraft}>Änderungen speichern</button>
-                                </div>
-                              ) : (
-                                <p className="empty">Kein Entwurf vorhanden. Klicke "Neu generieren" um einen Entwurf zu erstellen.</p>
-                              )}
-                            </>
-                          ) : null
-                        })()}
-                      </>
+                    {activeContacts.length === 0 ? (
+                      <p className="empty">Keine nutzbaren Kontakte im Adressbuch. Bitte zuerst über die Suche Kontakte verifizieren und ins Adressbuch übernehmen.</p>
                     ) : (
-                      <p className="empty">Kontakt links auswählen, um den E-Mail-Entwurf zu sehen und zu bearbeiten.</p>
+                      <>
+                        <div className="list">
+                          {activeContacts.map(a => (
+                            <div key={a.id} className={`list-item camp-select-item ${campSelected.has(a.id) ? 'camp-selected' : ''}`} onClick={() => toggleCampSelect(a.id)}>
+                              <div className="camp-checkbox">
+                                <input type="checkbox" checked={campSelected.has(a.id)} onChange={() => toggleCampSelect(a.id)} onClick={e => e.stopPropagation()} />
+                              </div>
+                              <div className="list-main">
+                                <strong>{a.name}</strong>
+                                <span className="sub">{a.title} · {a.company}</span>
+                                <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="wizard-actions">
+                          <span className="hint">{campSelected.size} von {activeContacts.length} ausgewählt</span>
+                          <button className="btn btn-primary" disabled={loading || campSelected.size === 0} onClick={campGoToStep2}>
+                            Weiter — Entwürfe erstellen
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
-                </div>
-              </div>
-            )}
+                )}
 
-            {/* Step 2 navigation */}
-            {campStep === 2 && (
-              <div className="wizard-actions">
-                <button className="btn btn-ghost" onClick={() => setCampStep(1)}>Zurück</button>
-                <button className="btn btn-primary" disabled={loading} onClick={campGoToStep3}>
-                  Weiter — Zur Freigabe
-                </button>
-              </div>
-            )}
-
-            {/* ── Step 3: Freigabe ── */}
-            {campStep === 3 && (
-              <div className="card">
-                <div className="card-header">
-                  <h2>Entwürfe freigeben</h2>
-                  <div className="card-actions">
-                    <button className="btn btn-secondary btn-sm" disabled={loading} onClick={campApproveAll}>Alle freigeben</button>
-                  </div>
-                </div>
-                <p className="hint" style={{marginBottom:'0.75rem'}}>Prüfe jeden Entwurf und gib ihn einzeln oder alle auf einmal frei.</p>
-                <div className="list">
-                  {campLeads.filter(l => l.drafted_email).map(l => {
-                    const approved = l.drafted_email?.is_approved
-                    return (
-                      <div key={l.id} className={`list-item ${approved ? 'camp-approved-item' : ''}`}>
-                        <div className="list-main">
-                          <strong>{l.name}</strong>
-                          <span className="sub">{l.title} · {l.company} · {l.email}</span>
-                          <span className="sub camp-subject-preview">Betreff: {l.drafted_email?.subject || '—'}</span>
-                        </div>
-                        <div className="list-actions">
-                          {approved
-                            ? <>
-                                <span className="badge badge-green">Freigegeben</span>
-                                <button className="btn btn-ghost btn-sm" onClick={() => campUnapprove(l.id)}>Widerrufen</button>
-                              </>
-                            : <>
-                                <span className="badge badge-yellow">Entwurf</span>
-                                <button className="btn btn-primary btn-sm" onClick={() => campApprove(l.id)}>Freigeben</button>
-                              </>
-                          }
-                          <button className="btn btn-ghost btn-sm" onClick={() => { setCampActiveLeadId(l.id); setCampDraftSubject(l.drafted_email?.subject || ''); setCampDraftBody(l.drafted_email?.body || ''); setCampStep(2) }}>Bearbeiten</button>
+                {/* ── Step 2: Entwürfe bearbeiten (two-column) ── */}
+                {campStep === 2 && (
+                  <div className="camp-two-col">
+                    {/* Left: Contact list */}
+                    <div className="camp-col-left">
+                      <div className="card">
+                        <h2>Kontakte ({campLeads.length})</h2>
+                        <div className="list">
+                          {campLeads.map(l => (
+                            <div key={l.id} className={`list-item camp-lead-item ${campActiveLeadId === l.id ? 'camp-lead-active' : ''}`} onClick={() => campSelectLead(l)}>
+                              <div className="list-main">
+                                <strong>{l.name}</strong>
+                                <span className="sub">{l.title} · {l.company}</span>
+                              </div>
+                              <div className="list-actions">
+                                {l.drafted_email ? <span className="badge badge-yellow">Entwurf</span> : <span className="badge badge-gray">Kein Entwurf</span>}
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    )
-                  })}
-                </div>
-                <div className="wizard-actions">
-                  <button className="btn btn-ghost" onClick={() => setCampStep(2)}>Zurück</button>
-                  <button className="btn btn-primary" disabled={loading} onClick={campGoToStep4}>
-                    Weiter — Zum Versand
-                  </button>
-                </div>
-              </div>
-            )}
+                    </div>
 
-            {/* ── Step 4: Versand ── */}
-            {campStep === 4 && (
-              <div className="card">
-                <div className="card-header">
-                  <h2>E-Mails versenden</h2>
-                  <div className="card-actions">
-                    <button className="btn btn-ghost btn-sm" onClick={toggleSendSelectAll}>
-                      {campSendSelected.size === campLeads.filter(l => l.drafted_email?.is_approved && !l.date_email_sent).length ? 'Keine' : 'Alle'} auswählen
-                    </button>
-                  </div>
-                </div>
-                {!authStatus?.authenticated && (
-                  <div className="card card-warn" style={{marginBottom:'0.75rem'}}>
-                    <a href="/api/auth/google/login">Mit Google verbinden</a> um E-Mails zu senden.
+                    {/* Right: Email editor */}
+                    <div className="camp-col-right">
+                      <div className="card">
+                        {campActiveLeadId ? (
+                          <>
+                            {(() => {
+                              const activeLead = campLeads.find(l => l.id === campActiveLeadId)
+                              return activeLead ? (
+                                <>
+                                  <div className="card-header">
+                                    <h2>E-Mail an {activeLead.name}</h2>
+                                    <div className="card-actions">
+                                      <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => campRegenerateDraft(activeLead.id)}>Neu generieren</button>
+                                    </div>
+                                  </div>
+                                  <div className="camp-recipient">
+                                    <span className="sub">An: {activeLead.email} · {activeLead.title} · {activeLead.company}</span>
+                                  </div>
+                                  {activeLead.drafted_email ? (
+                                    <div className="camp-editor">
+                                      <div className="form-group">
+                                        <label>Betreff</label>
+                                        <input value={campDraftSubject} onChange={e => setCampDraftSubject(e.target.value)} />
+                                      </div>
+                                      <div className="form-group">
+                                        <label>Nachricht</label>
+                                        <textarea className="camp-textarea" value={campDraftBody} onChange={e => setCampDraftBody(e.target.value)} rows={14} />
+                                      </div>
+                                      <button className="btn btn-secondary" disabled={loading} onClick={campSaveDraft}>Änderungen speichern</button>
+                                    </div>
+                                  ) : (
+                                    <p className="empty">Kein Entwurf vorhanden. Klicke "Neu generieren" um einen Entwurf zu erstellen.</p>
+                                  )}
+                                </>
+                              ) : null
+                            })()}
+                          </>
+                        ) : (
+                          <p className="empty">Kontakt links auswählen, um den E-Mail-Entwurf zu sehen und zu bearbeiten.</p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
-                <p className="hint" style={{marginBottom:'0.75rem'}}>
-                  Wähle die E-Mails aus, die gesendet werden sollen. Zwischen Sendungen wird 30–90 Sekunden gewartet (Google API Rate Limit).
-                </p>
-                <div className="list">
-                  {campLeads.filter(l => l.drafted_email?.is_approved).map(l => {
-                    const alreadySent = !!l.date_email_sent
-                    return (
-                      <div key={l.id} className={`list-item ${alreadySent ? 'camp-sent-item' : ''} ${campSendSelected.has(l.id) ? 'camp-selected' : ''}`}>
-                        {!alreadySent && (
-                          <div className="camp-checkbox">
-                            <input type="checkbox" checked={campSendSelected.has(l.id)} onChange={() => toggleSendSelect(l.id)} />
+
+                {/* Step 2 navigation */}
+                {campStep === 2 && (
+                  <div className="wizard-actions">
+                    <button className="btn btn-ghost" onClick={() => setCampStep(1)}>Zurück</button>
+                    <button className="btn btn-primary" disabled={loading} onClick={campGoToStep3}>
+                      Weiter — Zur Freigabe
+                    </button>
+                  </div>
+                )}
+
+                {/* ── Step 3: Freigabe ── */}
+                {campStep === 3 && (
+                  <div className="card">
+                    <div className="card-header">
+                      <h2>Entwürfe freigeben</h2>
+                      <div className="card-actions">
+                        <button className="btn btn-secondary btn-sm" disabled={loading} onClick={campApproveAll}>Alle freigeben</button>
+                      </div>
+                    </div>
+                    <p className="hint" style={{marginBottom:'0.75rem'}}>Prüfe jeden Entwurf und gib ihn einzeln oder alle auf einmal frei.</p>
+                    <div className="list">
+                      {campLeads.filter(l => l.drafted_email).map(l => {
+                        const approved = l.drafted_email?.is_approved
+                        return (
+                          <div key={l.id} className={`list-item ${approved ? 'camp-approved-item' : ''}`}>
+                            <div className="list-main">
+                              <strong>{l.name}</strong>
+                              <span className="sub">{l.title} · {l.company} · {l.email}</span>
+                              <span className="sub camp-subject-preview">Betreff: {l.drafted_email?.subject || '—'}</span>
+                            </div>
+                            <div className="list-actions">
+                              {approved
+                                ? <>
+                                    <span className="badge badge-green">Freigegeben</span>
+                                    <button className="btn btn-ghost btn-sm" onClick={() => campUnapprove(l.id)}>Widerrufen</button>
+                                  </>
+                                : <>
+                                    <span className="badge badge-yellow">Entwurf</span>
+                                    <button className="btn btn-primary btn-sm" onClick={() => campApprove(l.id)}>Freigeben</button>
+                                  </>
+                              }
+                              <button className="btn btn-ghost btn-sm" onClick={() => { setCampActiveLeadId(l.id); setCampDraftSubject(l.drafted_email?.subject || ''); setCampDraftBody(l.drafted_email?.body || ''); setCampStep(2) }}>Bearbeiten</button>
+                            </div>
                           </div>
-                        )}
-                        <div className="list-main">
-                          <strong>{l.name}</strong>
-                          <span className="sub">{l.email} · {l.title} · {l.company}</span>
-                          <span className="sub camp-subject-preview">Betreff: {l.drafted_email?.subject || '—'}</span>
+                        )
+                      })}
+                    </div>
+                    <div className="wizard-actions">
+                      <button className="btn btn-ghost" onClick={() => setCampStep(2)}>Zurück</button>
+                      <button className="btn btn-primary" disabled={loading} onClick={campGoToStep4}>
+                        Weiter — Zum Versand
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Step 4: Versand ── */}
+                {campStep === 4 && (
+                  <div className="card">
+                    <div className="card-header">
+                      <h2>E-Mails versenden</h2>
+                      <div className="card-actions">
+                        <button className="btn btn-ghost btn-sm" onClick={toggleSendSelectAll}>
+                          {campSendSelected.size === campLeads.filter(l => l.drafted_email?.is_approved && !l.date_email_sent).length ? 'Keine' : 'Alle'} auswählen
+                        </button>
+                      </div>
+                    </div>
+                    {!authStatus?.authenticated && (
+                      <div className="card card-warn" style={{marginBottom:'0.75rem'}}>
+                        <a href="/api/auth/google/login">Mit Google verbinden</a> um E-Mails zu senden.
+                      </div>
+                    )}
+                    <p className="hint" style={{marginBottom:'0.75rem'}}>
+                      Wähle die E-Mails aus, die gesendet werden sollen. Zwischen Sendungen wird 30–90 Sekunden gewartet (Google API Rate Limit).
+                    </p>
+                    <div className="list">
+                      {campLeads.filter(l => l.drafted_email?.is_approved).map(l => {
+                        const alreadySent = !!l.date_email_sent
+                        return (
+                          <div key={l.id} className={`list-item ${alreadySent ? 'camp-sent-item' : ''} ${campSendSelected.has(l.id) ? 'camp-selected' : ''}`}>
+                            {!alreadySent && (
+                              <div className="camp-checkbox">
+                                <input type="checkbox" checked={campSendSelected.has(l.id)} onChange={() => toggleSendSelect(l.id)} />
+                              </div>
+                            )}
+                            <div className="list-main">
+                              <strong>{l.name}</strong>
+                              <span className="sub">{l.email} · {l.title} · {l.company}</span>
+                              <span className="sub camp-subject-preview">Betreff: {l.drafted_email?.subject || '—'}</span>
+                            </div>
+                            <div className="list-actions">
+                              {alreadySent
+                                ? <span className="badge badge-green">Gesendet</span>
+                                : <span className="badge badge-blue">Bereit</span>
+                              }
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="wizard-actions">
+                      <button className="btn btn-ghost" onClick={() => setCampStep(3)}>Zurück</button>
+                      <button className="btn btn-primary btn-send" disabled={loading || campSendSelected.size === 0 || !authStatus?.authenticated} onClick={campSendEmails}>
+                        {campSendSelected.size} E-Mail{campSendSelected.size !== 1 ? 's' : ''} jetzt senden
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ═══ SEQUENZEN VIEW ═══════════════════════ */}
+            {seqView === 'sequences' && (
+              <div>
+                {/* Sequence Actions Bar */}
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Multi-Touch-Sequenzen</h2>
+                    <div className="card-actions">
+                      <button className="btn btn-secondary btn-sm" disabled={loading} onClick={seqDraftAllNext}>Alle nächsten Schritte erstellen</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { loadSeqCampaigns(); loadSeqTemplates() }}>Aktualisieren</button>
+                    </div>
+                  </div>
+                  <p className="hint" style={{marginBottom:'0.5rem'}}>
+                    4-Schritt-Sequenz: Initial → Follow-Up 1 (Tag 3) → Follow-Up 2 (Tag 8) → Breakup (Tag 15). Jeder Schritt muss einzeln freigegeben werden.
+                  </p>
+
+                  {/* Start new sequence for leads without campaign */}
+                  {leads.filter(l => l.email_verified && !l.campaign_sequence && !l.opted_out).length > 0 && (
+                    <div style={{padding:'0.75rem',background:'#f0f9ff',borderRadius:'0.5rem',border:'1px solid #bae6fd',marginBottom:'0.75rem'}}>
+                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.5rem'}}>
+                        <span style={{fontSize:'0.85rem'}}>
+                          <strong>{leads.filter(l => l.email_verified && !l.campaign_sequence && !l.opted_out).length}</strong> verifizierte Leads ohne Sequenz
+                        </span>
+                        <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => {
+                          const eligibleIds = leads.filter(l => l.email_verified && !l.campaign_sequence && !l.opted_out).map(l => l.id)
+                          seqStartCampaign(eligibleIds)
+                        }}>Sequenz für alle starten</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Campaign List */}
+                {seqCampaigns.length === 0 ? (
+                  <div className="card"><p className="empty">Keine aktiven Sequenzen. Starte eine Sequenz für verifizierte Leads.</p></div>
+                ) : (
+                  seqCampaigns.map(camp => (
+                    <div key={camp.lead_id} className="card" style={{marginBottom:'0.75rem'}}>
+                      <div className="card-header">
+                        <div>
+                          <h2 style={{margin:0,fontSize:'1rem'}}>{camp.name}</h2>
+                          <span className="sub">{camp.company} · {camp.email}</span>
                         </div>
-                        <div className="list-actions">
-                          {alreadySent
-                            ? <span className="badge badge-green">Gesendet</span>
-                            : <span className="badge badge-blue">Bereit</span>
+                        <div className="card-actions">
+                          {camp.has_reply && <span className="badge badge-green">Antwort erhalten</span>}
+                          {camp.is_paused
+                            ? <>
+                                <span className="badge badge-yellow">Pausiert</span>
+                                <button className="btn btn-secondary btn-sm" onClick={() => seqResume(camp.lead_id)}>Fortsetzen</button>
+                              </>
+                            : <button className="btn btn-ghost btn-sm" onClick={() => seqPause(camp.lead_id)}>Pausieren</button>
                           }
                         </div>
                       </div>
-                    )
-                  })}
-                </div>
-                <div className="wizard-actions">
-                  <button className="btn btn-ghost" onClick={() => setCampStep(3)}>Zurück</button>
-                  <button className="btn btn-primary btn-send" disabled={loading || campSendSelected.size === 0 || !authStatus?.authenticated} onClick={campSendEmails}>
-                    {campSendSelected.size} E-Mail{campSendSelected.size !== 1 ? 's' : ''} jetzt senden
-                  </button>
-                </div>
+
+                      {/* Progress bar */}
+                      <div style={{margin:'0.5rem 0',background:'#f3f4f6',borderRadius:'0.25rem',height:'6px',overflow:'hidden'}}>
+                        <div style={{width:`${(camp.completed_steps / camp.total_steps) * 100}%`,height:'100%',background:'#22c55e',borderRadius:'0.25rem',transition:'width 0.3s'}} />
+                      </div>
+                      <div className="sub" style={{marginBottom:'0.5rem'}}>{camp.completed_steps}/{camp.total_steps} Schritte abgeschlossen</div>
+
+                      {/* Sequence Steps */}
+                      <div style={{display:'flex',flexDirection:'column',gap:'0.375rem'}}>
+                        {camp.sequence.map(step => (
+                          <div key={step.step} style={{display:'flex',alignItems:'center',gap:'0.5rem',padding:'0.375rem 0.5rem',background:step.status === 'drafted' ? '#fffbeb' : step.status === 'approved' ? '#eff6ff' : step.status === 'sent' ? '#f0fdf4' : '#fff',borderRadius:'0.375rem',border:'1px solid #e5e7eb',fontSize:'0.8rem'}}>
+                            <span style={{fontWeight:500,minWidth:'80px'}}>{stepTypeLabel(step.type)}</span>
+                            {stepStatusBadge(step.status)}
+                            {step.subject && <span className="sub" style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{step.subject}</span>}
+                            {step.scheduled_at && step.status === 'pending' && <span className="sub" style={{fontSize:'0.7rem'}}>{new Date(step.scheduled_at).toLocaleDateString('de-DE')}</span>}
+                            <div style={{display:'flex',gap:'0.25rem',flexShrink:0}}>
+                              {step.status === 'drafted' && (
+                                <button className="btn btn-primary btn-sm" style={{fontSize:'0.7rem',padding:'2px 6px'}} onClick={() => seqApproveStep(camp.lead_id, step.step)}>Freigeben</button>
+                              )}
+                              {step.status === 'pending' && !camp.is_paused && (
+                                <button className="btn btn-secondary btn-sm" style={{fontSize:'0.7rem',padding:'2px 6px'}} disabled={loading} onClick={() => seqDraftNext(camp.lead_id)}>Entwerfen</button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </div>
@@ -922,18 +1117,104 @@ function App() {
             <h1 className="page-title">Analytics</h1>
             <p className="page-desc">Übersicht aller versendeten E-Mails, Antworten und Kampagnen-Performance</p>
 
-            {/* Summary Stats */}
+            {/* Enhanced Summary Stats */}
             <div className="card">
-              <h2>Übersicht</h2>
+              <h2>Funnel-Übersicht</h2>
               <div className="stats-grid">
+                <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_leads || 0}</div><div className="stat-lbl">Leads gesamt</div></div>
+                <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_verified || 0}</div><div className="stat-lbl">Verifiziert</div></div>
                 <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_sent || 0}</div><div className="stat-lbl">Gesendet</div></div>
                 <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_delivered || 0}</div><div className="stat-lbl">Zugestellt</div></div>
                 <div className="stat-card" style={analyticsSummary?.total_bounced > 0 ? {borderColor:'#ef4444'} : {}}><div className="stat-val">{analyticsSummary?.total_bounced || 0}</div><div className="stat-lbl">Bounced</div></div>
                 <div className="stat-card" style={analyticsSummary?.total_replied > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{analyticsSummary?.total_replied || 0}</div><div className="stat-lbl">Antworten</div></div>
                 <div className="stat-card" style={analyticsSummary?.total_unsubscribed > 0 ? {borderColor:'#f59e0b'} : {}}><div className="stat-val">{analyticsSummary?.total_unsubscribed || 0}</div><div className="stat-lbl">Abgemeldet</div></div>
-                <div className="stat-card"><div className="stat-val">{analyticsSummary?.reply_rate || 0}%</div><div className="stat-lbl">Antwort-Rate</div></div>
+                <div className="stat-card"><div className="stat-val">{analyticsSummary?.total_follow_ups || 0}</div><div className="stat-lbl">Follow-Ups</div></div>
+              </div>
+
+              {/* Rates */}
+              <div style={{display:'flex',gap:'1rem',flexWrap:'wrap',marginTop:'1rem',paddingTop:'1rem',borderTop:'1px solid #e5e7eb'}}>
+                <div style={{flex:1,minWidth:'120px',textAlign:'center',padding:'0.75rem',background:'#f9fafb',borderRadius:'0.5rem'}}>
+                  <div style={{fontSize:'1.5rem',fontWeight:700,color: (analyticsSummary?.reply_rate || 0) > 5 ? '#22c55e' : '#6b7280'}}>{analyticsSummary?.reply_rate || 0}%</div>
+                  <div style={{fontSize:'0.75rem',color:'#6b7280'}}>Antwort-Rate</div>
+                </div>
+                <div style={{flex:1,minWidth:'120px',textAlign:'center',padding:'0.75rem',background:'#f9fafb',borderRadius:'0.5rem'}}>
+                  <div style={{fontSize:'1.5rem',fontWeight:700,color: (analyticsSummary?.effective_reply_rate || 0) > 5 ? '#22c55e' : '#6b7280'}}>{analyticsSummary?.effective_reply_rate || 0}%</div>
+                  <div style={{fontSize:'0.75rem',color:'#6b7280'}}>Effektive Rate (ohne Bounces)</div>
+                </div>
+                <div style={{flex:1,minWidth:'120px',textAlign:'center',padding:'0.75rem',background:'#f9fafb',borderRadius:'0.5rem'}}>
+                  <div style={{fontSize:'1.5rem',fontWeight:700,color: (analyticsSummary?.bounce_rate || 0) > 5 ? '#ef4444' : '#6b7280'}}>{analyticsSummary?.bounce_rate || 0}%</div>
+                  <div style={{fontSize:'0.75rem',color:'#6b7280'}}>Bounce-Rate</div>
+                </div>
+                <div style={{flex:1,minWidth:'120px',textAlign:'center',padding:'0.75rem',background:'#f9fafb',borderRadius:'0.5rem'}}>
+                  <div style={{fontSize:'1.5rem',fontWeight:700,color: (analyticsSummary?.unsub_rate || 0) > 2 ? '#f59e0b' : '#6b7280'}}>{analyticsSummary?.unsub_rate || 0}%</div>
+                  <div style={{fontSize:'0.75rem',color:'#6b7280'}}>Abmelde-Rate</div>
+                </div>
               </div>
             </div>
+
+            {/* Verification Quality */}
+            {analyticsSummary?.by_risk_level && (analyticsSummary.by_risk_level.low > 0 || analyticsSummary.by_risk_level.medium > 0 || analyticsSummary.by_risk_level.high > 0) && (
+              <div className="card">
+                <h2>E-Mail-Qualität (SMTP-Verifizierung)</h2>
+                <div className="stats-grid">
+                  <div className="stat-card" style={{borderColor:'#22c55e'}}><div className="stat-val">{analyticsSummary.by_risk_level.low}</div><div className="stat-lbl">Niedriges Risiko</div></div>
+                  <div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-val">{analyticsSummary.by_risk_level.medium}</div><div className="stat-lbl">Mittleres Risiko</div></div>
+                  <div className="stat-card" style={{borderColor:'#ef4444'}}><div className="stat-val">{analyticsSummary.by_risk_level.high}</div><div className="stat-lbl">Hohes Risiko</div></div>
+                  <div className="stat-card" style={{borderColor:'#ef4444'}}><div className="stat-val">{analyticsSummary.by_risk_level.invalid}</div><div className="stat-lbl">Ungültig</div></div>
+                </div>
+                <div className="sub" style={{marginTop:'0.5rem'}}>{analyticsSummary.total_smtp_verified || 0} von {analyticsSummary.total_verified || 0} verifizierten Leads auch SMTP-geprüft</div>
+              </div>
+            )}
+
+            {/* Campaign Sequences Stats */}
+            {analyticsSummary?.total_in_campaign > 0 && (
+              <div className="card">
+                <h2>Kampagnen-Sequenzen</h2>
+                <div className="stats-grid">
+                  <div className="stat-card"><div className="stat-val">{analyticsSummary.total_in_campaign}</div><div className="stat-lbl">Leads in Sequenz</div></div>
+                  <div className="stat-card"><div className="stat-val">{analyticsSummary.total_campaign_steps_sent}</div><div className="stat-lbl">Schritte gesendet</div></div>
+                  <div className="stat-card"><div className="stat-val">{analyticsSummary.total_campaign_steps_pending}</div><div className="stat-lbl">Schritte ausstehend</div></div>
+                  <div className="stat-card" style={analyticsSummary.total_campaign_paused > 0 ? {borderColor:'#f59e0b'} : {}}><div className="stat-val">{analyticsSummary.total_campaign_paused}</div><div className="stat-lbl">Pausiert</div></div>
+                </div>
+              </div>
+            )}
+
+            {/* Funnel View */}
+            {analyticsFunnel?.stages && (
+              <div className="card">
+                <h2>Pipeline-Funnel</h2>
+                <div style={{display:'flex',flexDirection:'column',gap:'0.25rem'}}>
+                  {[
+                    { key: 'identified', label: 'Identifiziert', color: '#6b7280' },
+                    { key: 'verified', label: 'Verifiziert', color: '#3b82f6' },
+                    { key: 'email_drafted', label: 'E-Mail erstellt', color: '#8b5cf6' },
+                    { key: 'email_sent', label: 'Gesendet', color: '#f59e0b' },
+                    { key: 'follow_up_sent', label: 'Follow-Up gesendet', color: '#f97316' },
+                    { key: 'replied', label: 'Antwort erhalten', color: '#22c55e' },
+                  ].map(stage => {
+                    const val = analyticsFunnel.stages[stage.key] || 0
+                    const max = analyticsFunnel.stages.identified || 1
+                    const pct = Math.round((val / max) * 100)
+                    return (
+                      <div key={stage.key} style={{display:'flex',alignItems:'center',gap:'0.75rem'}}>
+                        <div style={{width:'120px',fontSize:'0.8rem',color:'#6b7280',textAlign:'right'}}>{stage.label}</div>
+                        <div style={{flex:1,background:'#f3f4f6',borderRadius:'0.25rem',height:'24px',overflow:'hidden'}}>
+                          <div style={{width:`${pct}%`,height:'100%',background:stage.color,borderRadius:'0.25rem',transition:'width 0.5s',minWidth:val > 0 ? '2px' : 0}} />
+                        </div>
+                        <div style={{width:'50px',fontSize:'0.8rem',fontWeight:600}}>{val}</div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {analyticsFunnel.conversions && (
+                  <div className="sub" style={{marginTop:'0.75rem',paddingTop:'0.5rem',borderTop:'1px solid #e5e7eb'}}>
+                    {analyticsFunnel.conversions.identified_to_verified != null && <span style={{marginRight:'1rem'}}>Identifiziert → Verifiziert: {analyticsFunnel.conversions.identified_to_verified}%</span>}
+                    {analyticsFunnel.conversions.verified_to_sent != null && <span style={{marginRight:'1rem'}}>Verifiziert → Gesendet: {analyticsFunnel.conversions.verified_to_sent}%</span>}
+                    {analyticsFunnel.conversions.sent_to_replied != null && <span>Gesendet → Antwort: {analyticsFunnel.conversions.sent_to_replied}%</span>}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Check Replies Button */}
             <div className="card">
@@ -983,6 +1264,7 @@ function App() {
                       </div>
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:'0.5rem',flexShrink:0}}>
+                      {em.campaign_current_step > 0 && <span className="badge badge-blue" style={{fontSize:'0.65rem'}}>Schritt {em.campaign_current_step}</span>}
                       {em.reply_received && !em.reply_received.startsWith('[UNSUBSCRIBE]') && <span className="badge badge-green">Antwort</span>}
                       {em.opted_out && <span className="badge badge-yellow">Abgemeldet</span>}
                       {em.delivery_status === 'Bounced' && <span className="badge badge-red">Bounced</span>}
@@ -1064,6 +1346,7 @@ function App() {
                   <div className="stat-card"><div className="stat-val">{stats.emails_sent}</div><div className="stat-lbl">Gesendet</div></div>
                   <div className="stat-card"><div className="stat-val">{stats.address_book_count || 0}</div><div className="stat-lbl">Adressbuch</div></div>
                   <div className="stat-card"><div className="stat-val">{stats.conversion_rate}%</div><div className="stat-lbl">Rate</div></div>
+                  {stats.in_campaign > 0 && <div className="stat-card"><div className="stat-val">{stats.in_campaign}</div><div className="stat-lbl">In Sequenz</div></div>}
                 </div>
               </div>
             )}

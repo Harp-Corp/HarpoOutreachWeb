@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .models.db import SessionLocal, init_db
-from .routes import auth, data, email_pipeline, prospecting, analytics
+from .routes import auth, data, email_pipeline, prospecting, analytics, campaigns
 from .services import database_service as db_svc
 
 logging.basicConfig(
@@ -21,7 +21,7 @@ logger = logging.getLogger("harpo.main")
 app = FastAPI(
     title="HarpoOutreach Web",
     description="B2B Compliance Outreach Platform – Web API",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 # CORS
@@ -44,6 +44,7 @@ app.include_router(prospecting.router, prefix="/api")
 app.include_router(email_pipeline.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
+app.include_router(campaigns.router, prefix="/api")
 
 
 def _seed_settings():

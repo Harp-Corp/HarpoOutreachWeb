@@ -78,6 +78,16 @@ class LeadDB(Base):
     opt_out_date = Column(DateTime, nullable=True)
     delivery_status = Column(String, nullable=False, default="Pending")
     gmail_thread_id = Column(String, nullable=True)  # Gmail thread ID for reply tracking
+    # ── New: Technical email verification ──
+    email_risk_level = Column(String, nullable=False, default="unknown")  # low/medium/high/invalid/unknown
+    email_smtp_verified = Column(Boolean, nullable=False, default=False)
+    email_is_catch_all = Column(Boolean, nullable=False, default=False)
+    email_mx_host = Column(String, nullable=False, default="")
+    # ── New: Campaign sequence tracking ──
+    campaign_sequence_json = Column(Text, nullable=True)  # JSON: [{step, type, subject, body, status, scheduled_at, sent_at}]
+    campaign_current_step = Column(Integer, nullable=False, default=0)  # 0 = not started
+    campaign_paused = Column(Boolean, nullable=False, default=False)
+    last_reply_check = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
@@ -125,6 +135,21 @@ class SocialPostDB(Base):
     created_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     is_published = Column(Boolean, nullable=False, default=False)
     is_copied = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ─── Campaign Sequences (templates) ──────────────────────────────
+
+class CampaignTemplateDB(Base):
+    __tablename__ = "campaign_templates"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name = Column(String, nullable=False, default="Standard-Sequenz")
+    description = Column(Text, nullable=False, default="")
+    steps_json = Column(Text, nullable=False, default="[]")
+    # steps_json format: [{"step": 1, "type": "initial"|"follow_up"|"breakup", "delay_days": 0, "subject_template": "", "body_template": ""}]
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -184,6 +209,16 @@ def init_db():
             ("follow_up_email_json", "ALTER TABLE leads ADD COLUMN follow_up_email_json TEXT"),
             ("date_follow_up_sent", "ALTER TABLE leads ADD COLUMN date_follow_up_sent TIMESTAMP"),
             ("gmail_thread_id", "ALTER TABLE leads ADD COLUMN gmail_thread_id VARCHAR"),
+            # New: email verification columns
+            ("email_risk_level", "ALTER TABLE leads ADD COLUMN email_risk_level VARCHAR NOT NULL DEFAULT 'unknown'"),
+            ("email_smtp_verified", "ALTER TABLE leads ADD COLUMN email_smtp_verified BOOLEAN NOT NULL DEFAULT false"),
+            ("email_is_catch_all", "ALTER TABLE leads ADD COLUMN email_is_catch_all BOOLEAN NOT NULL DEFAULT false"),
+            ("email_mx_host", "ALTER TABLE leads ADD COLUMN email_mx_host VARCHAR NOT NULL DEFAULT ''"),
+            # New: campaign sequence columns
+            ("campaign_sequence_json", "ALTER TABLE leads ADD COLUMN campaign_sequence_json TEXT"),
+            ("campaign_current_step", "ALTER TABLE leads ADD COLUMN campaign_current_step INTEGER NOT NULL DEFAULT 0"),
+            ("campaign_paused", "ALTER TABLE leads ADD COLUMN campaign_paused BOOLEAN NOT NULL DEFAULT false"),
+            ("last_reply_check", "ALTER TABLE leads ADD COLUMN last_reply_check TIMESTAMP"),
         ]
         for col_name, sql in migrations:
             if col_name not in lead_cols:
