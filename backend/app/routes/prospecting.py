@@ -19,6 +19,9 @@ logger = logging.getLogger("harpo.prospecting")
 
 router = APIRouter(prefix="/prospecting", tags=["Prospecting"])
 
+# Max concurrent Perplexity API calls for verify-all
+MAX_CONCURRENT_VERIFY = 3
+
 
 @router.post("/find-companies")
 async def find_companies(
@@ -154,31 +157,20 @@ async def find_contacts_all(db: Session = Depends(get_db)):
     return {"success": True, "total_new": total_new}
 
 
-@router.post("/verify-email/{lead_id}")
-async def verify_email(
-    lead_id: UUID,
-    db: Session = Depends(get_db),
-):
-    """Verify a lead's email address using:
-    1. Perplexity web search (find/validate email)
-    2. Technical SMTP/MX verification (check deliverability)
-    """
-    api_key = db_svc.get_setting(db, "perplexity_api_key")
-    if not api_key:
-        raise HTTPException(400, "Perplexity API Key nicht konfiguriert.")
+async def _verify_single_lead(lead, api_key: str, db: Session) -> dict:
+    """Verify a single lead's email. Returns result dict.
+    Used by both single-verify and batch-verify endpoints."""
 
-    lead = db_svc.get_lead(db, lead_id)
-    if not lead:
-        raise HTTPException(404, "Lead nicht gefunden.")
+    lead_id = lead.id
 
-    # Step 1: Perplexity web search for email (existing logic)
+    # Step 1: Perplexity web search for email
     try:
         pplx_result = await pplx.verify_email(
             lead.name, lead.title, lead.company, lead.email, lead.linkedin_url, api_key
         )
     except Exception as ex:
-        logger.error(f"Perplexity email verification failed for lead {lead_id}: {ex}")
-        raise HTTPException(500, f"Verifikation fehlgeschlagen: {str(ex)[:200]}")
+        logger.warning(f"Perplexity verification failed for {lead.name}: {ex}")
+        return {"lead_id": str(lead_id), "name": lead.name, "error": str(ex)[:200]}
 
     # Update email from Perplexity result
     found_email = pplx_result.get("email", lead.email)
@@ -188,7 +180,7 @@ async def verify_email(
     pplx_verified = pplx_result.get("verified", False)
     pplx_notes = pplx_result.get("notes", "")
 
-    # Step 2: Technical SMTP/MX verification
+    # Step 2: Technical SMTP/MX verification (best-effort)
     tech_result = {"risk_level": "unknown", "notes": "Keine E-Mail für technische Prüfung"}
     if lead.email and "@" in lead.email:
         try:
@@ -203,11 +195,24 @@ async def verify_email(
     is_catch_all = tech_result.get("is_catch_all", False)
 
     # Determine final verification status
-    # Email is verified if: Perplexity found it AND technical check passed (low/medium risk)
+    # Verified if:
+    # - Perplexity found and confirmed an email (pplx_verified=True)
+    #   AND risk is low or medium (MX exists, syntax OK, not disposable)
+    #   AND SMTP didn't explicitly reject (smtp_ok is not False)
+    # OR:
+    # - Perplexity confirmed with high confidence even if risk is "unknown"
+    #   (because SMTP may be unavailable in cloud)
     is_verified = (
         pplx_verified
         and risk in ("low", "medium")
         and smtp_ok is not False  # Not explicitly rejected by server
+    ) or (
+        # Fallback: Perplexity high confidence + email has valid syntax + not disposable
+        pplx_verified
+        and risk == "unknown"
+        and lead.email
+        and "@" in lead.email
+        and not tech_result.get("is_disposable", False)
     )
 
     # Update lead fields — NEVER change status to 'Contacted' automatically
@@ -233,87 +238,114 @@ async def verify_email(
     db.commit()
 
     return {
+        "lead_id": str(lead_id),
+        "name": lead.name,
+        "email": lead.email,
+        "verified": is_verified,
+        "risk_level": risk,
+        "smtp_verified": smtp_ok is True,
+        "is_catch_all": is_catch_all,
+        "notes": lead.verification_notes,
+    }
+
+
+@router.post("/verify-email/{lead_id}")
+async def verify_email(
+    lead_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """Verify a lead's email address using:
+    1. Perplexity web search (find/validate email)
+    2. Technical SMTP/MX verification (check deliverability)
+    """
+    api_key = db_svc.get_setting(db, "perplexity_api_key")
+    if not api_key:
+        raise HTTPException(400, "Perplexity API Key nicht konfiguriert.")
+
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+
+    result = await _verify_single_lead(lead, api_key, db)
+
+    if "error" in result:
+        raise HTTPException(500, f"Verifikation fehlgeschlagen: {result['error']}")
+
+    return {
         "success": True,
         "data": {
-            "email": lead.email,
-            "verified": is_verified,
-            "risk_level": risk,
-            "smtp_verified": smtp_ok is True,
-            "is_catch_all": is_catch_all,
-            "notes": lead.verification_notes,
+            "email": result.get("email", ""),
+            "verified": result.get("verified", False),
+            "risk_level": result.get("risk_level", "unknown"),
+            "smtp_verified": result.get("smtp_verified", False),
+            "is_catch_all": result.get("is_catch_all", False),
+            "notes": result.get("notes", ""),
         },
     }
 
 
 @router.post("/verify-all")
 async def verify_all_emails(db: Session = Depends(get_db)):
-    """Verify emails for all unverified leads — Perplexity + SMTP."""
+    """Verify emails for all unverified leads — parallel with semaphore.
+    Runs up to MAX_CONCURRENT_VERIFY Perplexity calls in parallel.
+    Returns progress in real-time-friendly format."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
         raise HTTPException(400, "Perplexity API Key nicht konfiguriert.")
 
     leads = db_svc.load_leads(db)
     unverified = [l for l in leads if not l.email_verified]
+
+    if not unverified:
+        return {"success": True, "verified": 0, "total": 0, "errors": [], "message": "Alle Leads bereits verifiziert."}
+
+    logger.info(f"[VerifyAll] Starting parallel verification for {len(unverified)} leads (concurrency={MAX_CONCURRENT_VERIFY})")
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_VERIFY)
+    results = []
+
+    async def verify_with_semaphore(lead):
+        async with semaphore:
+            try:
+                # Each lead gets its own DB session to avoid conflicts
+                from ..models.db import SessionLocal
+                session = SessionLocal()
+                try:
+                    # Re-fetch lead in this session
+                    fresh_lead = db_svc.get_lead(session, lead.id)
+                    if not fresh_lead:
+                        return {"lead_id": str(lead.id), "name": lead.name, "error": "Lead not found in session"}
+                    result = await _verify_single_lead(fresh_lead, api_key, session)
+                    return result
+                finally:
+                    session.close()
+            except Exception as ex:
+                logger.warning(f"[VerifyAll] Failed for {lead.name}: {ex}")
+                return {"lead_id": str(lead.id), "name": lead.name, "error": str(ex)[:200]}
+
+    # Run all verifications in parallel with semaphore limiting concurrency
+    tasks = [verify_with_semaphore(lead) for lead in unverified]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Process results
     verified_count = 0
     errors = []
-    for lead in unverified:
-        try:
-            # Step 1: Perplexity
-            pplx_result = await pplx.verify_email(
-                lead.name, lead.title, lead.company, lead.email, lead.linkedin_url, api_key
-            )
-            found_email = pplx_result.get("email", lead.email)
-            if found_email:
-                lead.email = found_email
-            pplx_verified = pplx_result.get("verified", False)
-            pplx_notes = pplx_result.get("notes", "")
-
-            # Step 2: Technical SMTP/MX
-            tech_result = {"risk_level": "unknown", "notes": ""}
-            if lead.email and "@" in lead.email:
-                try:
-                    tech_result = await email_verify.verify_email_technical(lead.email)
-                except Exception:
-                    pass
-
-            risk = tech_result.get("risk_level", "unknown")
-            smtp_ok = tech_result.get("smtp_exists", None)
-            is_catch_all = tech_result.get("is_catch_all", False)
-
-            is_verified = (
-                pplx_verified
-                and risk in ("low", "medium")
-                and smtp_ok is not False
-            )
-
-            lead.email_verified = is_verified
-            lead.email_risk_level = risk
-            lead.email_smtp_verified = smtp_ok is True
-            lead.email_is_catch_all = is_catch_all
-            lead.email_mx_host = tech_result.get("mx_host", "")
-
-            notes_parts = [f"Perplexity: {pplx_notes}"]
-            tech_notes = tech_result.get("notes", "")
-            if tech_notes:
-                notes_parts.append(f"SMTP: {tech_notes}")
-            notes_parts.append(f"Risiko: {risk}")
-            lead.verification_notes = " | ".join(notes_parts)[:500]
-
-            if is_verified:
-                if lead.status == "Identified":
-                    lead.status = "Email Verified"
+    for r in results:
+        if isinstance(r, Exception):
+            errors.append(str(r)[:100])
+        elif isinstance(r, dict):
+            if r.get("verified"):
                 verified_count += 1
-            db.commit()
-        except Exception as ex:
-            logger.warning(f"Verify failed for {lead.name}: {ex}")
-            errors.append(f"{lead.name}: {str(ex)[:100]}")
-            continue
+            if r.get("error"):
+                errors.append(f"{r.get('name', '?')}: {r['error'][:100]}")
+
+    logger.info(f"[VerifyAll] Done: {verified_count}/{len(unverified)} verified, {len(errors)} errors")
 
     return {
         "success": True,
         "verified": verified_count,
         "total": len(unverified),
-        "errors": errors[:5] if errors else [],
+        "errors": errors[:10] if errors else [],
     }
 
 
@@ -348,7 +380,7 @@ async def verify_email_technical_only(
         lead.verification_notes = tech_note[:500]
 
     # Mark as verified if low risk
-    if result["risk_level"] == "low" and result.get("smtp_exists") is True:
+    if result["risk_level"] in ("low", "medium") and result.get("smtp_exists") is not False:
         lead.email_verified = True
         if lead.status == "Identified":
             lead.status = "Email Verified"

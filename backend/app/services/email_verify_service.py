@@ -1,8 +1,8 @@
 # Email Verification Service – Real SMTP/MX verification
-# Replaces pure Perplexity-based "verification" with actual technical checks:
+# Technical checks with graceful degradation for cloud environments (Port 25 blocked):
 # 1. Syntax check
 # 2. DNS MX record lookup
-# 3. SMTP handshake (RCPT TO) without sending
+# 3. SMTP handshake (RCPT TO) — best-effort, not required for verification
 # 4. Catch-all detection
 # 5. Disposable email detection
 from __future__ import annotations
@@ -33,6 +33,20 @@ ROLE_PREFIXES = {
     "postmaster", "webmaster", "abuse", "billing", "help",
 }
 
+# Well-known corporate email domains that definitely exist (skip SMTP check)
+KNOWN_CORPORATE_DOMAINS = {
+    "allianz.com", "db.com", "commerzbank.com", "deutsche-bank.com",
+    "siemens.com", "sap.com", "bosch.com", "bmw.com", "daimler.com",
+    "volkswagen.de", "basf.com", "bayer.com", "eon.com", "rwe.com",
+    "telekom.de", "t-systems.com", "infineon.com", "continental.com",
+    "fresenius.com", "henkel.com", "merck.de", "thyssenkrupp.com",
+    "munichre.com", "swissre.com", "ubs.com", "credit-suisse.com",
+    "zurich.com", "axa.com", "generali.com", "ergo.de", "ergo.com",
+    "lbbw.de", "bayernlb.de", "dz-bank.de", "kfw.de", "helaba.de",
+    "nordlb.de", "deka.de", "union-investment.de", "dws.com",
+    "herrenknecht.com", "trumpf.com", "zeiss.com", "festo.com",
+}
+
 
 def _is_valid_syntax(email: str) -> bool:
     """Check email syntax validity."""
@@ -52,6 +66,12 @@ def _is_role_based(email: str) -> bool:
     return local in ROLE_PREFIXES
 
 
+def _is_known_corporate(email: str) -> bool:
+    """Check if domain is a well-known corporate domain."""
+    domain = email.split("@")[1].lower()
+    return domain in KNOWN_CORPORATE_DOMAINS
+
+
 async def _lookup_mx(domain: str) -> list[str]:
     """Look up MX records for a domain. Returns list of mail server hostnames."""
     import dns.resolver
@@ -66,12 +86,13 @@ async def _lookup_mx(domain: str) -> list[str]:
         return []
 
 
-async def _smtp_verify(email: str, mx_host: str, timeout: int = 10) -> dict:
+async def _smtp_verify(email: str, mx_host: str, timeout: int = 8) -> dict:
     """Perform SMTP handshake to verify email exists.
-    Returns {exists: bool, catch_all: bool, error: str}."""
+    Returns {exists: bool, catch_all: bool, error: str}.
+    Best-effort — many cloud environments block port 25."""
 
     def _do_smtp():
-        result = {"exists": False, "catch_all": False, "error": ""}
+        result = {"exists": None, "catch_all": False, "error": ""}
         try:
             with smtplib.SMTP(mx_host, 25, timeout=timeout) as smtp:
                 smtp.ehlo("harpocrates-corp.com")
@@ -84,23 +105,22 @@ async def _smtp_verify(email: str, mx_host: str, timeout: int = 10) -> dict:
                     result["exists"] = False
                     result["error"] = "Mailbox does not exist"
                 elif code in (450, 451, 452):
-                    # Temporary error — treat as unknown
-                    result["exists"] = None  # uncertain
+                    result["exists"] = None
                     result["error"] = f"Temporary error: {code}"
                 elif code == 421:
                     result["error"] = "Server busy / rate limited"
                 else:
                     result["error"] = f"SMTP code {code}: {msg.decode('utf-8', errors='replace')[:100]}"
 
-                # Catch-all detection: test a random nonexistent address
+                # Catch-all detection
                 random_addr = f"harpo_test_nonexist_xq7z@{email.split('@')[1]}"
                 code2, _ = smtp.rcpt(random_addr)
                 if code2 == 250:
                     result["catch_all"] = True
 
                 smtp.quit()
-        except smtplib.SMTPConnectError:
-            result["error"] = "Connection refused"
+        except (smtplib.SMTPConnectError, ConnectionRefusedError, OSError):
+            result["error"] = "Port 25 blocked (cloud environment)"
         except smtplib.SMTPServerDisconnected:
             result["error"] = "Server disconnected"
         except socket.timeout:
@@ -114,13 +134,16 @@ async def _smtp_verify(email: str, mx_host: str, timeout: int = 10) -> dict:
 
 async def verify_email_technical(email: str) -> dict:
     """Full technical email verification pipeline.
+    Gracefully degrades when SMTP port 25 is blocked (common in cloud environments).
+    MX records + valid syntax + non-disposable = sufficient for "low" risk when SMTP unavailable.
+
     Returns:
     {
         email: str,
         is_valid_syntax: bool,
         has_mx_records: bool,
         mx_host: str,
-        smtp_exists: bool | None,  # None = uncertain
+        smtp_exists: bool | None,  # None = uncertain / unavailable
         is_catch_all: bool,
         is_disposable: bool,
         is_role_based: bool,
@@ -179,30 +202,41 @@ async def verify_email_technical(email: str) -> dict:
     result["mx_host"] = mx_hosts[0]
     result["verification_method"] = "mx_lookup"
 
-    # Step 5: SMTP verification (try first 2 MX hosts)
+    # Step 5: SMTP verification (best-effort, 8s timeout)
+    smtp_attempted = False
     smtp_result = None
     for mx in mx_hosts[:2]:
         try:
             smtp_result = await asyncio.wait_for(
-                _smtp_verify(email, mx),
-                timeout=15,
+                _smtp_verify(email, mx, timeout=8),
+                timeout=10,
             )
+            smtp_attempted = True
             if smtp_result.get("exists") is not None:
                 break
         except asyncio.TimeoutError:
             smtp_result = {"exists": None, "catch_all": False, "error": "Timeout"}
+            smtp_attempted = True
         except Exception as e:
             smtp_result = {"exists": None, "catch_all": False, "error": str(e)[:100]}
+            smtp_attempted = True
 
-    if smtp_result:
+    smtp_blocked = (
+        smtp_result is not None
+        and smtp_result.get("exists") is None
+        and "blocked" in smtp_result.get("error", "").lower()
+        or smtp_result is not None
+        and "refused" in smtp_result.get("error", "").lower()
+        or smtp_result is not None
+        and "timeout" in smtp_result.get("error", "").lower()
+    )
+
+    if smtp_result and smtp_result.get("exists") is not None:
+        # SMTP gave a definitive answer
         result["smtp_exists"] = smtp_result.get("exists")
         result["is_catch_all"] = smtp_result.get("catch_all", False)
         result["verification_method"] = "smtp_handshake"
 
-        if smtp_result.get("error"):
-            result["notes"] = smtp_result["error"]
-
-        # Determine risk level
         if smtp_result["exists"] is True:
             if result["is_catch_all"]:
                 result["risk_level"] = "medium"
@@ -216,14 +250,25 @@ async def verify_email_technical(email: str) -> dict:
         elif smtp_result["exists"] is False:
             result["risk_level"] = "invalid"
             result["notes"] = "SMTP: Postfach existiert nicht"
-        else:
-            # Uncertain — server didn't give clear answer
-            result["risk_level"] = "medium"
-            if not result["notes"]:
-                result["notes"] = "SMTP-Prüfung nicht eindeutig"
     else:
-        # No SMTP result at all — rely on MX only
-        result["risk_level"] = "medium"
-        result["notes"] = "MX-Records vorhanden, SMTP-Prüfung nicht möglich"
+        # SMTP unavailable (port 25 blocked, timeout, etc.)
+        # Fall back to MX-based verification — this is valid for business emails
+        result["verification_method"] = "mx_verified"
+
+        if _is_known_corporate(email):
+            # Known corporate domain + valid syntax + MX records = low risk
+            result["risk_level"] = "low"
+            result["notes"] = "MX-verifiziert (bekannte Firmen-Domain)"
+        elif result["is_role_based"]:
+            result["risk_level"] = "medium"
+            result["notes"] = "MX-verifiziert, rollenbasierte Adresse"
+        else:
+            # Valid syntax + MX records + non-disposable = low risk
+            # (SMTP check is nice-to-have but not required for B2B outreach)
+            result["risk_level"] = "low"
+            result["notes"] = "MX-verifiziert (SMTP-Prüfung nicht verfügbar in Cloud)"
+
+        if smtp_result and smtp_result.get("error"):
+            result["notes"] += f" | {smtp_result['error']}"
 
     return result
