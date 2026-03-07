@@ -75,7 +75,22 @@ def company_exists(db: Session, name: str) -> bool:
 
 
 def get_company_by_name(db: Session, name: str) -> Optional[CompanyDB]:
-    return db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).first()
+    # Try exact match first (case-insensitive)
+    exact = db.query(CompanyDB).filter(func.lower(CompanyDB.name) == name.lower()).first()
+    if exact:
+        return exact
+    # Try fuzzy match: search term contained in company name or vice versa
+    like_match = db.query(CompanyDB).filter(
+        func.lower(CompanyDB.name).contains(name.lower())
+    ).first()
+    if like_match:
+        return like_match
+    # Try reverse: company name contained in search term
+    all_companies = db.query(CompanyDB).all()
+    for c in all_companies:
+        if c.name.lower() in name.lower():
+            return c
+    return None
 
 
 # ─── Leads ────────────────────────────────────────────────────────

@@ -46,7 +46,7 @@ async def search_company(
     if not company_name:
         raise HTTPException(400, "Unternehmensname darf nicht leer sein.")
 
-    # Step 1: Check if company already exists in DB
+    # Step 1: Check if company already exists in DB (fuzzy match)
     existing = db_svc.get_company_by_name(db, company_name)
     if existing:
         company = existing
@@ -54,9 +54,16 @@ async def search_company(
     else:
         # Search via Perplexity
         logger.info(f"[SearchCompany] Searching for: {company_name}")
-        company_data = await pplx.search_single_company(company_name, api_key)
+        try:
+            company_data = await pplx.search_single_company(company_name, api_key)
+        except Exception as ex:
+            err_str = str(ex)
+            if "quota" in err_str.lower() or "401" in err_str:
+                return {"success": False, "error": "api_quota", "message": "Perplexity API Quota erschöpft. Bitte später erneut versuchen oder API-Guthaben prüfen."}
+            return {"success": False, "error": "api_error", "message": f"API-Fehler: {err_str[:200]}"}
+        
         if not company_data:
-            return {"success": False, "error": "not_found", "message": f"Unternehmen '{company_name}' nicht gefunden."}
+            return {"success": False, "error": "not_found", "message": f"Unternehmen '{company_name}' nicht gefunden. Tipp: Offiziellen Firmennamen verwenden (z.B. 'Deutsche Bank AG' statt 'Deutsche Bank')."}
         
         # Map Perplexity response keys to DB column names
         mapped = {
@@ -77,25 +84,44 @@ async def search_company(
 
     company_resp = db_svc.company_db_to_response(company)
 
-    # Step 2: Find contacts at this company
+    # Step 2: Check if contacts already exist for this company
+    existing_company_leads = [l for l in db_svc.load_leads(db) if l.company == company.name]
+    
+    if existing_company_leads:
+        # Company already has contacts — return them directly without re-searching
+        logger.info(f"[SearchCompany] Returning {len(existing_company_leads)} existing contacts for {company.name}")
+        company_leads = [_slim_lead_response(db_svc.lead_db_to_response(l)) for l in existing_company_leads]
+        return {
+            "success": True,
+            "company": company_resp,
+            "contacts": company_leads,
+            "total_contacts": len(company_leads),
+            "verified_contacts": sum(1 for l in company_leads if l.get("email_verified")),
+        }
+
+    # Step 3: Find new contacts at this company
     logger.info(f"[SearchCompany] Finding contacts at {company.name}...")
     try:
         contacts = await pplx.find_contacts(
             company.name, company.industry or "", company.region or "", company.website or "", api_key
         )
     except Exception as ex:
+        err_str = str(ex)
         logger.warning(f"[SearchCompany] Contact search failed: {ex}")
+        if "quota" in err_str.lower() or "401" in err_str:
+            return {
+                "success": True,
+                "company": company_resp,
+                "contacts": [],
+                "total_contacts": 0,
+                "verified_contacts": 0,
+                "warning": "Perplexity API Quota erschöpft — Kontaktsuche nicht möglich. Bitte API-Guthaben prüfen.",
+            }
         contacts = []
 
     saved_leads = []
     for c in contacts:
         if db_svc.lead_exists(db, c["name"], company.name):
-            # Load existing lead instead of skipping
-            existing_leads = db_svc.load_leads(db)
-            for el in existing_leads:
-                if el.name == c["name"] and el.company == company.name:
-                    saved_leads.append(db_svc.lead_db_to_response(el))
-                    break
             continue
         lead_data = {
             "id": uuid4(),
@@ -109,39 +135,38 @@ async def search_company(
             "status": "Identified",
         }
         obj = db_svc.save_lead(db, lead_data)
-        saved_leads.append(db_svc.lead_db_to_response(obj))
+        saved_leads.append(obj)
 
-    # Step 3: Verify emails for new contacts (parallel)
-    logger.info(f"[SearchCompany] Verifying {len(saved_leads)} contacts...")
-    unverified_ids = [l["id"] for l in saved_leads if not l.get("email_verified")]
-    
-    if unverified_ids:
+    # Step 4: Verify emails for new contacts (parallel)
+    unverified = [l for l in saved_leads if not l.email_verified]
+    if unverified:
+        logger.info(f"[SearchCompany] Verifying {len(unverified)} contacts...")
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_VERIFY)
         
-        async def verify_one(lead_id_str):
+        async def verify_one(lead):
             async with semaphore:
                 try:
                     from ..models.db import SessionLocal
                     session = SessionLocal()
                     try:
-                        lead = db_svc.get_lead(session, UUID(lead_id_str))
-                        if not lead:
+                        fresh_lead = db_svc.get_lead(session, lead.id)
+                        if not fresh_lead:
                             return None
-                        result = await _verify_single_lead(lead, api_key, session)
+                        result = await _verify_single_lead(fresh_lead, api_key, session)
                         return result
                     finally:
                         session.close()
                 except Exception as ex:
-                    logger.warning(f"[SearchCompany] Verify failed for {lead_id_str}: {ex}")
+                    logger.warning(f"[SearchCompany] Verify failed for {lead.name}: {ex}")
                     return None
         
-        verify_results = await asyncio.gather(*[verify_one(lid) for lid in unverified_ids], return_exceptions=True)
+        verify_results = await asyncio.gather(*[verify_one(l) for l in unverified], return_exceptions=True)
         verified_count = sum(1 for r in verify_results if isinstance(r, dict) and r.get("verified"))
-        logger.info(f"[SearchCompany] Verified {verified_count}/{len(unverified_ids)} contacts")
+        logger.info(f"[SearchCompany] Verified {verified_count}/{len(unverified)} contacts")
     
-    # Reload leads to get updated verification status
+    # Reload leads to get updated verification status — slim response
     all_leads = db_svc.load_leads(db)
-    company_leads = [db_svc.lead_db_to_response(l) for l in all_leads if l.company == company.name]
+    company_leads = [_slim_lead_response(db_svc.lead_db_to_response(l)) for l in all_leads if l.company == company.name]
 
     return {
         "success": True,
@@ -149,6 +174,24 @@ async def search_company(
         "contacts": company_leads,
         "total_contacts": len(company_leads),
         "verified_contacts": sum(1 for l in company_leads if l.get("email_verified")),
+    }
+
+
+def _slim_lead_response(lead: dict) -> dict:
+    """Return only the fields needed for the address book search results.
+    Avoids sending huge verification_notes in the response."""
+    return {
+        "id": lead.get("id"),
+        "name": lead.get("name"),
+        "title": lead.get("title"),
+        "company": lead.get("company"),
+        "email": lead.get("email"),
+        "email_verified": lead.get("email_verified"),
+        "status": lead.get("status"),
+        "source": lead.get("source"),
+        "linkedin_url": lead.get("linkedin_url"),
+        "email_risk_level": lead.get("email_risk_level"),
+        "email_smtp_verified": lead.get("email_smtp_verified"),
     }
 
 

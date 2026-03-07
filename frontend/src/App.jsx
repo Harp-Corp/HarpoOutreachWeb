@@ -241,18 +241,30 @@ function App() {
     setAbSearching(true); setAbSearchResult(null); setError('')
     startLoading(`Suche nach "${abSearchQuery.trim()}" — Unternehmen, Kontakte und Verifizierung...`)
     try {
-      const r = await fetchJson(`${API}/prospecting/search-company`, {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000) // 5 min timeout
+      const resp = await fetch(`${API}/prospecting/search-company`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ company_name: abSearchQuery.trim() })
+        body: JSON.stringify({ company_name: abSearchQuery.trim() }),
+        signal: controller.signal
       })
+      clearTimeout(timeout)
+      const r = await resp.json()
       if (r.success) {
-        setAbSearchResult({ company: r.company, contacts: r.contacts || [] })
-        showSuccess(`${r.total_contacts} Kontakte gefunden, ${r.verified_contacts} verifiziert`)
+        setAbSearchResult({ company: r.company, contacts: r.contacts || [], warning: r.warning || null })
+        const msg = r.warning || `${r.total_contacts} Kontakte gefunden, ${r.verified_contacts} verifiziert`
+        if (r.warning) { setError(r.warning) } else { showSuccess(msg) }
       } else {
-        setError(r.message || 'Unternehmen nicht gefunden.')
+        setError(r.message || r.detail || 'Unternehmen nicht gefunden.')
       }
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        setError('Zeitüberschreitung — die Suche hat zu lange gedauert. Bitte erneut versuchen.')
+      } else {
+        setError(`Verbindungsfehler: ${e.message}. Bitte erneut versuchen.`)
+      }
+    }
     setAbSearching(false)
     stopLoading()
   }
