@@ -58,8 +58,21 @@ async def search_company(
         if not company_data:
             return {"success": False, "error": "not_found", "message": f"Unternehmen '{company_name}' nicht gefunden."}
         
-        company_data["id"] = uuid4()
-        company = db_svc.save_company(db, company_data)
+        # Map Perplexity response keys to DB column names
+        mapped = {
+            "id": uuid4(),
+            "name": company_data.get("name", company_name),
+            "industry": company_data.get("industry", ""),
+            "region": company_data.get("region", ""),
+            "website": company_data.get("website", ""),
+            "linkedin_url": company_data.get("linkedInURL", company_data.get("linkedin_url", "")),
+            "description": company_data.get("description", ""),
+            "size": company_data.get("size", ""),
+            "country": company_data.get("country", ""),
+            "nace_code": company_data.get("nace_code", ""),
+            "employee_count": company_data.get("employee_count", company_data.get("employees", 0)),
+        }
+        company = db_svc.save_company(db, mapped)
         logger.info(f"[SearchCompany] Saved new company: {company.name}")
 
     company_resp = db_svc.company_db_to_response(company)
