@@ -131,7 +131,7 @@ function App() {
     setError(''); setSuccessMsg('')
     if (section === 'overview') { loadDashboard(); loadLeads(); loadAddressBook(); loadCompanies(); loadAnalyticsSummary() }
     else if (section === 'search') { loadCompanies(); loadLeads() }
-    else if (section === 'addressbook') { loadAddressBook(); loadLeads() }
+    else if (section === 'addressbook') { loadAddressBook(); loadLeads(); loadSentEmails() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts() }
     else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel() }
@@ -312,6 +312,19 @@ function App() {
     } catch (e) { setError(e.message) }
     stopLoading()
   }
+  const importCSV = async (file) => {
+    startLoading('CSV wird importiert...'); setError('')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const resp = await fetch(`${API}/data/address-book/import-csv`, { method: 'POST', body: formData })
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Fehler ${resp.status}`) }
+      const r = await resp.json()
+      showSuccess(`${r.imported || 0} Kontakte importiert${r.skipped ? `, ${r.skipped} übersprungen (Duplikate)` : ''}`)
+      await loadAddressBook()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
 
   // ── Targeted company search (address book page) ──
   const searchCompany = async () => {
@@ -398,7 +411,10 @@ function App() {
   const renderPostContent = (text) => {
     if (!text) return ''
     const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const withLinks = escaped.replace(
+    // Render markdown bold **text** and *text*
+    let rendered = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    rendered = rendered.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+    const withLinks = rendered.replace(
       /(https?:\/\/[^\s)<>]+)/g,
       '<a href="$1" target="_blank" rel="noopener noreferrer" class="post-link">$1</a>'
     )
@@ -997,6 +1013,7 @@ function App() {
                                     {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
                                     {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
                                     {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                                    {l.linkedin_url && <>{' '}<a href={l.linkedin_url} target="_blank" rel="noopener noreferrer" className="post-link" style={{fontSize:'0.6rem'}}>in</a></>}
                                   </span>
                                   {l.verification_notes && <span className="sub verify-notes" title={l.verification_notes}>📝 {l.verification_notes.split(' | ')[0]}</span>}
                                 </div>
@@ -1022,6 +1039,7 @@ function App() {
                                   {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
                                   {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
                                   {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                                  {l.linkedin_url && <>{' '}<a href={l.linkedin_url} target="_blank" rel="noopener noreferrer" className="post-link" style={{fontSize:'0.6rem'}}>in</a></>}
                                 </span>
                                 {l.verification_notes && <span className="sub verify-notes" title={l.verification_notes}>📝 {l.verification_notes.split(' | ')[0]}</span>}
                               </div>
@@ -1140,7 +1158,10 @@ function App() {
                       ✉ Kampagne ({addressBook.filter(a => (a.contact_status || 'active') === 'active' && a.email).length})
                     </button>
                   )}
-                  {addressBook.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('address-book')}>CSV</button>}
+                  {addressBook.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('address-book')}>CSV ↓</button>}
+                  <label className="btn btn-ghost" style={{cursor:'pointer'}}>
+                    CSV ↑ <input type="file" accept=".csv" style={{display:'none'}} onChange={e => { if (e.target.files[0]) { importCSV(e.target.files[0]); e.target.value = '' } }} />
+                  </label>
                   <button className="btn btn-primary" onClick={() => setShowAddForm(!showAddForm)}>{showAddForm ? 'Abbrechen' : '+ Kontakt'}</button>
                 </div>
               </div>
@@ -1172,22 +1193,25 @@ function App() {
                   const abFiltered = addressBook.filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked'))
                   const renderRow = (a, grouped) => {
                     const isBlocked = a.contact_status === 'blocked'
+                    // Find matching sent email for last activity
+                    const matchingSent = sentEmails.find(e => e.email?.toLowerCase() === a.email?.toLowerCase())
+                    const lastActivity = matchingSent?.reply_received ? 'Antwort' : matchingSent?.date_email_sent ? `Gesendet ${matchingSent.date_email_sent.split('T')[0]}` : null
                           return (
                             <div key={a.id} className={`list-item ${isBlocked ? 'list-item-blocked' : ''}`} style={grouped ? {paddingLeft:'0.5rem'} : {}}>
                               <div className="list-main">
                                 <strong>{a.name}</strong>
                                 <span className="sub">{grouped ? a.title : `${a.title} · ${a.company}`}</span>
-                                <span className="sub">{a.email}{a.email_verified && <span className="verified">✓</span>}</span>
+                                <span className="sub">
+                                  {a.email}{a.email_verified && <span className="verified">✓</span>}
+                                  {a.linkedin_url && <>{' '}<a href={a.linkedin_url} target="_blank" rel="noopener noreferrer" className="post-link" style={{fontSize:'0.65rem'}}>LinkedIn</a></>}
+                                </span>
+                                {lastActivity && <span className="sub" style={{color: matchingSent?.reply_received ? '#22c55e' : '#6b7280'}}>Letzte Aktivität: {lastActivity}</span>}
                               </div>
                               <div className="list-actions">
-                                <span className={`badge ${a.source === 'verified' ? 'badge-green' : 'badge-blue'}`}>{a.source === 'verified' ? 'Verifiziert' : 'Manuell'}</span>
+                                <span className={`badge ${a.source === 'verified' ? 'badge-green' : 'badge-blue'}`}>{a.source === 'verified' ? '✓' : '✎'}</span>
                                 {isBlocked
-                                  ? <span className="badge badge-red">Gesperrt</span>
-                                  : <span className="badge badge-green">Nutzbar</span>
-                                }
-                                {isBlocked
-                                  ? <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => setContactStatus(a.id, 'active')} title="Freischalten">Freischalten</button>
-                                  : <button className="btn btn-ghost btn-sm" style={{color:'#f59e0b'}} disabled={loading} onClick={() => setContactStatus(a.id, 'blocked')} title="Sperren">Sperren</button>
+                                  ? <button className="btn btn-ghost btn-sm" style={{fontSize:'0.85rem'}} disabled={loading} onClick={() => setContactStatus(a.id, 'active')} title="Freischalten">🔓</button>
+                                  : <button className="btn btn-ghost btn-sm" style={{fontSize:'0.85rem'}} disabled={loading} onClick={() => setContactStatus(a.id, 'blocked')} title="Sperren">🔒</button>
                                 }
                                 <span className="action-separator" />
                                 <button className="btn btn-ghost btn-sm btn-danger-subtle" disabled={loading} onClick={() => permanentlyDeleteContact(a.id)} title="Endgültig löschen">×</button>
@@ -1265,9 +1289,12 @@ function App() {
                         </div>
                         <div className="wizard-actions">
                           <span className="hint">{campSelected.size} von {activeContacts.length} ausgewählt</span>
-                          <button className="btn btn-primary" disabled={loading || campSelected.size === 0} onClick={campGoToStep2}>
-                            Weiter — Entwürfe erstellen
-                          </button>
+                          <div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}>
+                            {campSelected.size === 0 && <span className="sub">Bitte mindestens einen Kontakt auswählen</span>}
+                            <button className="btn btn-primary" disabled={loading || campSelected.size === 0} onClick={campGoToStep2}>
+                              Weiter — Entwürfe erstellen ({campSelected.size})
+                            </button>
+                          </div>
                         </div>
                       </>
                     )}
@@ -1596,6 +1623,35 @@ function App() {
             <h1 className="page-title">Analytics</h1>
             <p className="page-desc">Übersicht aller versendeten E-Mails, Antworten und Kampagnen-Performance</p>
 
+            {/* Check Replies - prominent at top */}
+            <div className="card" style={{background:'#f0f9ff',border:'1px solid #bae6fd'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.75rem'}}>
+                <div>
+                  <h2 style={{margin:0,color:'#0c4a6e'}}>Gmail-Antworten prüfen</h2>
+                  <p className="sub" style={{margin:'0.25rem 0 0'}}>Durchsucht Gmail nach Antworten, Abmeldungen und Bounces</p>
+                </div>
+                <button className="btn btn-primary btn-send" disabled={checkingReplies} onClick={checkReplies}>
+                  {checkingReplies ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.5rem'}} />Wird geprüft...</> : '📩 Antworten prüfen'}
+                </button>
+              </div>
+              {replyCheckResult && replyCheckResult.details && replyCheckResult.details.length > 0 && (
+                <div style={{marginTop:'1rem',padding:'0.75rem',background:'#fff',borderRadius:'0.5rem',border:'1px solid #bbf7d0'}}>
+                  <strong>Ergebnis:</strong>
+                  <ul style={{margin:'0.5rem 0 0',paddingLeft:'1.25rem'}}>
+                    {replyCheckResult.details.map((d, i) => (
+                      <li key={i} style={{marginBottom:'0.25rem'}}>
+                        <span style={{fontWeight:500}}>{d.name}</span> ({d.email}) —{' '}
+                        {d.type === 'reply' && <span className="badge badge-green">Antwort</span>}
+                        {d.type === 'unsubscribe' && <span className="badge badge-yellow">Abmeldung</span>}
+                        {d.type === 'bounce' && <span className="badge badge-red">Bounce</span>}
+                        {d.snippet && <span className="sub" style={{marginLeft:'0.5rem'}}>{d.snippet}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
             {/* Enhanced Summary Stats */}
             <div className="card">
               <h2>Funnel-Übersicht</h2>
@@ -1695,35 +1751,6 @@ function App() {
               </div>
             )}
 
-            {/* Check Replies Button */}
-            <div className="card">
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.75rem'}}>
-                <div>
-                  <h2 style={{margin:0}}>Gmail-Antworten prüfen</h2>
-                  <p className="sub" style={{margin:'0.25rem 0 0'}}>Durchsucht Gmail nach Antworten, Abmeldungen und Bounces</p>
-                </div>
-                <button className="btn btn-primary" disabled={checkingReplies} onClick={checkReplies}>
-                  {checkingReplies ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.5rem'}} />Wird geprüft...</> : 'Antworten prüfen'}
-                </button>
-              </div>
-              {replyCheckResult && replyCheckResult.details && replyCheckResult.details.length > 0 && (
-                <div style={{marginTop:'1rem',padding:'0.75rem',background:'#f0fdf4',borderRadius:'0.5rem',border:'1px solid #bbf7d0'}}>
-                  <strong>Ergebnis:</strong>
-                  <ul style={{margin:'0.5rem 0 0',paddingLeft:'1.25rem'}}>
-                    {replyCheckResult.details.map((d, i) => (
-                      <li key={i} style={{marginBottom:'0.25rem'}}>
-                        <span style={{fontWeight:500}}>{d.name}</span> ({d.email}) —{' '}
-                        {d.type === 'reply' && <span className="badge badge-green">Antwort</span>}
-                        {d.type === 'unsubscribe' && <span className="badge badge-yellow">Abmeldung</span>}
-                        {d.type === 'bounce' && <span className="badge badge-red">Bounce</span>}
-                        {d.snippet && <span className="sub" style={{marginLeft:'0.5rem'}}>{d.snippet}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-
             {/* Sent Emails List */}
             <div className="card">
               <h2>Versendete E-Mails ({sentEmails.length})</h2>
@@ -1812,23 +1839,50 @@ function App() {
         {section === 'settings' && (
           <div key="settings">
             <h1 className="page-title">Einstellungen</h1>
-            <div className="card"><h2>Google Auth</h2>
+            <p className="page-desc">Integrationen und Konfiguration</p>
+
+            <div className="card">
+              <h2>Google-Anbindung</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Wird für den E-Mail-Versand und das Prüfen von Antworten benötigt.</p>
               {authStatus?.authenticated
-                ? <div style={{display:'flex',alignItems:'center',gap:'0.75rem'}}><span style={{color:'#22c55e'}}>Verbunden als {authStatus.email}</span>
-                    <button className="btn btn-secondary btn-sm" onClick={async () => { await fetchJson(`${API}/auth/logout`, { method: 'POST' }); loadAuthStatus() }}>Abmelden</button></div>
-                : <div><a href="/api/auth/google/login" className="btn btn-primary">Mit Google verbinden</a>{authStatus?.token_expired && <span style={{color:'#f59e0b',marginLeft:'0.5rem',fontSize:'0.8rem'}}>Token abgelaufen</span>}</div>}
+                ? <div style={{display:'flex',alignItems:'center',gap:'0.75rem',flexWrap:'wrap'}}>
+                    <span style={{display:'flex',alignItems:'center',gap:'0.375rem'}}><span style={{color:'#22c55e',fontSize:'1.1rem'}}>●</span> Verbunden als <strong>{authStatus.email}</strong></span>
+                    <button className="btn btn-secondary btn-sm" onClick={async () => { await fetchJson(`${API}/auth/logout`, { method: 'POST' }); loadAuthStatus() }}>Verbindung trennen</button>
+                  </div>
+                : <div style={{display:'flex',alignItems:'center',gap:'0.75rem',flexWrap:'wrap'}}>
+                    <a href="/api/auth/google/login" className="btn btn-primary">Mit Google verbinden</a>
+                    {authStatus?.token_expired && <span className="badge badge-yellow">Token abgelaufen — erneut verbinden</span>}
+                  </div>}
             </div>
-            {stats && (
-              <div className="card"><h2>Dashboard</h2>
-                <div className="stats-grid">
-                  <div className="stat-card"><div className="stat-val">{stats.total_leads}</div><div className="stat-lbl">Leads</div></div>
-                  <div className="stat-card"><div className="stat-val">{stats.emails_sent}</div><div className="stat-lbl">Gesendet</div></div>
-                  <div className="stat-card"><div className="stat-val">{stats.address_book_count || 0}</div><div className="stat-lbl">Adressbuch</div></div>
-                  <div className="stat-card"><div className="stat-val">{stats.conversion_rate}%</div><div className="stat-lbl">Rate</div></div>
-                  {stats.in_campaign > 0 && <div className="stat-card"><div className="stat-val">{stats.in_campaign}</div><div className="stat-lbl">In Sequenz</div></div>}
-                </div>
+
+            <div className="card">
+              <h2>Absender</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Informationen, die als Absender in E-Mails verwendet werden.</p>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0.75rem',maxWidth:'500px'}}>
+                <div className="form-group"><label>Name</label><input value="Martin Foerster" disabled style={{background:'#f9fafb'}} /></div>
+                <div className="form-group"><label>E-Mail</label><input value="mf@harpocrites-corp.com" disabled style={{background:'#f9fafb'}} /></div>
               </div>
-            )}
+              <span className="sub">Absender-Konfiguration wird serverseitig verwaltet.</span>
+            </div>
+
+            <div className="card">
+              <h2>Daten verwalten</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Export und Import deiner Outreach-Daten.</p>
+              <div style={{display:'flex',gap:'0.5rem',flexWrap:'wrap'}}>
+                <button className="btn btn-secondary" onClick={() => exportCSV('companies')}>Unternehmen CSV</button>
+                <button className="btn btn-secondary" onClick={() => exportCSV('leads')}>Kontakte CSV</button>
+                <button className="btn btn-secondary" onClick={() => exportCSV('address-book')}>Adressbuch CSV</button>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2>Info</h2>
+              <div style={{display:'flex',flexDirection:'column',gap:'0.25rem',fontSize:'0.8125rem',color:'#6b7280'}}>
+                <span>Harpocrates Outreach — v2.0</span>
+                <span>Frontend: React (Vite) · Backend: FastAPI (Cloud Run)</span>
+                <span>KI-Recherche: Perplexity Sonar Pro</span>
+              </div>
+            </div>
           </div>
         )}
       </main>

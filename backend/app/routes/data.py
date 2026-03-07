@@ -479,6 +479,70 @@ async def update_settings(data: dict, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+# ─── CSV Import ────────────────────────────────────────────────────────
+
+from fastapi import File, UploadFile
+
+@router.post("/address-book/import-csv")
+async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Import contacts from CSV file into the address book.
+    Expected columns (flexible matching): name, email, company, title, linkedin_url, phone
+    """
+    content = await file.read()
+    text = content.decode("utf-8-sig")  # handle BOM
+
+    # Detect delimiter
+    first_line = text.split("\n")[0] if text else ""
+    delimiter = ";" if ";" in first_line else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+
+    # Normalize header names
+    def find_col(row, candidates):
+        for c in candidates:
+            for k in row:
+                if k and k.strip().lower().replace("-", "_").replace(" ", "_") == c:
+                    return row[k]
+        return ""
+
+    imported = 0
+    skipped = 0
+    from ..models.db import AddressBookDB as ABImport
+    existing_emails = {a.email.lower() for a in db.query(ABImport).all() if a.email}
+
+    for row in reader:
+        email = find_col(row, ["email", "e_mail", "mail"]).strip()
+        if not email or email.lower() in existing_emails:
+            skipped += 1
+            continue
+        name = find_col(row, ["name", "full_name", "fullname", "kontakt"]).strip()
+        company = find_col(row, ["company", "firma", "unternehmen", "organisation"]).strip()
+        title = find_col(row, ["title", "titel", "position", "role", "rolle"]).strip()
+        linkedin = find_col(row, ["linkedin_url", "linkedin", "li_url"]).strip()
+        phone = find_col(row, ["phone", "telefon", "tel"]).strip()
+
+        if not name:
+            name = email.split("@")[0].replace(".", " ").title()
+
+        entry = ABImport(
+            id=uuid4(),
+            name=name,
+            email=email,
+            company=company or "",
+            title=title or "",
+            linkedin_url=linkedin or None,
+            phone=phone or None,
+            source="csv_import",
+            email_verified=False,
+            contact_status="active",
+        )
+        db.add(entry)
+        existing_emails.add(email.lower())
+        imported += 1
+
+    db.commit()
+    return {"success": True, "imported": imported, "skipped": skipped}
+
+
 # ─── Dashboard ────────────────────────────────────────────────────
 
 @router.get("/dashboard")
