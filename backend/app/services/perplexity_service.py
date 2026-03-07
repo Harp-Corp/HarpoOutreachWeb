@@ -687,7 +687,7 @@ Return JSON."""
                     company_domain = cd
             notes = data.get("notes", "")
             if notes:
-                all_notes.append(notes)
+                all_notes.append(str(notes) if not isinstance(notes, list) else "; ".join(str(n) for n in notes))
     except Exception as ex:
         all_notes.append(f"Pass 1 (email DBs): {ex}")
 
@@ -782,7 +782,8 @@ Return JSON with best_email, verified, confidence, reasoning."""
                         all_emails.append({"email": c, "source": "Alternative", "confidence": "low"})
             reasoning = data3.get("reasoning", "")
             if reasoning:
-                all_notes.append(f"Reasoning: {reasoning}")
+                reasoning_str = str(reasoning) if not isinstance(reasoning, list) else "; ".join(str(r) for r in reasoning)
+                all_notes.append(f"Reasoning: {reasoning_str}")
     except Exception as ex:
         all_notes.append(f"Pass 3 (reasoning): {ex}")
 
@@ -814,8 +815,8 @@ Return JSON with best_email, verified, confidence, reasoning."""
     else:
         notes_parts.append("No email found")
     notes_parts.append(f"Candidates: {len(all_emails)}, Sources: {len(set(e['source'] for e in all_emails))}")
-    notes_parts.extend(all_notes[:5])
-    notes_str = " | ".join(notes_parts)[:500]
+    notes_parts.extend(str(n) for n in all_notes[:5])
+    notes_str = " | ".join(str(p) for p in notes_parts)[:500]
 
     final = _clean_email(final_email or lead_email)
     return {"email": final, "verified": is_verified, "notes": notes_str}

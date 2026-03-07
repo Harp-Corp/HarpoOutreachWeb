@@ -222,15 +222,16 @@ async def _verify_single_lead(lead, api_key: str, db: Session) -> dict:
     lead.email_is_catch_all = is_catch_all
     lead.email_mx_host = tech_result.get("mx_host", "")
 
-    # Build comprehensive notes
-    notes_parts = [f"Perplexity: {pplx_notes}"]
+    # Build comprehensive notes (ensure all parts are strings)
+    pplx_notes_str = str(pplx_notes) if not isinstance(pplx_notes, (list, dict)) else str(pplx_notes)[:200]
+    notes_parts = [f"Perplexity: {pplx_notes_str}"]
     tech_notes = tech_result.get("notes", "")
     if tech_notes:
-        notes_parts.append(f"SMTP: {tech_notes}")
+        notes_parts.append(f"SMTP: {str(tech_notes)}")
     notes_parts.append(f"Risiko: {risk}")
     if is_catch_all:
         notes_parts.append("Catch-All-Domain")
-    lead.verification_notes = " | ".join(notes_parts)[:500]
+    lead.verification_notes = " | ".join(str(p) for p in notes_parts)[:500]
 
     if is_verified and lead.status == "Identified":
         lead.status = "Email Verified"
