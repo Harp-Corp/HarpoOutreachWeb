@@ -20,6 +20,9 @@ function App() {
   const [successMsg, setSuccessMsg] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
   const [abFilter, setAbFilter] = useState('all')
+  const [abSearchQuery, setAbSearchQuery] = useState('')
+  const [abSearchResult, setAbSearchResult] = useState(null) // { company, contacts }
+  const [abSearching, setAbSearching] = useState(false)
   const [analyticsExpanded, setAnalyticsExpanded] = useState({})
   const [checkingReplies, setCheckingReplies] = useState(false)
   const [replyCheckResult, setReplyCheckResult] = useState(null)
@@ -229,6 +232,59 @@ function App() {
       await fetchJson(`${API}/data/address-book`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       showSuccess('Kontakt hinzugefügt'); setShowAddForm(false); await loadAddressBook()
     } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  // ── Targeted company search (address book page) ──
+  const searchCompany = async () => {
+    if (!abSearchQuery.trim()) return
+    setAbSearching(true); setAbSearchResult(null); setError('')
+    startLoading(`Suche nach "${abSearchQuery.trim()}" — Unternehmen, Kontakte und Verifizierung...`)
+    try {
+      const r = await fetchJson(`${API}/prospecting/search-company`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company_name: abSearchQuery.trim() })
+      })
+      if (r.success) {
+        setAbSearchResult({ company: r.company, contacts: r.contacts || [] })
+        showSuccess(`${r.total_contacts} Kontakte gefunden, ${r.verified_contacts} verifiziert`)
+      } else {
+        setError(r.message || 'Unternehmen nicht gefunden.')
+      }
+    } catch (e) { setError(e.message) }
+    setAbSearching(false)
+    stopLoading()
+  }
+
+  const addSearchContactToAB = async (leadId) => {
+    startLoading('Wird ins Adressbuch übernommen...'); setError('')
+    try {
+      await fetchJson(`${API}/data/address-book/from-lead/${leadId}`, { method: 'POST' })
+      showSuccess('Ins Adressbuch übernommen')
+      await loadAddressBook()
+      // Update search results to reflect change
+      if (abSearchResult) {
+        const updatedContacts = abSearchResult.contacts.map(c =>
+          c.id === leadId ? { ...c, _inAddressBook: true } : c
+        )
+        setAbSearchResult({ ...abSearchResult, contacts: updatedContacts })
+      }
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  const addAllVerifiedSearchContactsToAB = async () => {
+    if (!abSearchResult?.contacts) return
+    const verified = abSearchResult.contacts.filter(c => c.email_verified && !abEmails.has(c.email?.toLowerCase()))
+    if (!verified.length) return
+    startLoading(`${verified.length} verifizierte Kontakte werden ins Adressbuch übernommen...`); setError('')
+    let added = 0
+    for (const c of verified) {
+      try { await fetchJson(`${API}/data/address-book/from-lead/${c.id}`, { method: 'POST' }); added++ } catch {}
+    }
+    showSuccess(`${added} Kontakte ins Adressbuch übernommen`)
+    await loadAddressBook()
     stopLoading()
   }
 
@@ -690,6 +746,81 @@ function App() {
           <div key="addressbook">
             <h1 className="page-title">Adressbuch</h1>
             <p className="page-desc">Verifizierte und manuell eingetragene Kontakte — Basis für Kampagnen</p>
+
+            {/* ── Gezielte Unternehmenssuche ── */}
+            <div className="card">
+              <div className="card-header">
+                <h2>Unternehmen suchen</h2>
+              </div>
+              <p className="card-desc">Gezielt nach einem Unternehmen suchen und relevante Ansprechpartner finden, verifizieren und ins Adressbuch übernehmen.</p>
+              <div className="search-inline">
+                <input
+                  type="text"
+                  placeholder="Unternehmensname eingeben (z.B. Siemens, Deutsche Bank, SAP...)"
+                  value={abSearchQuery}
+                  onChange={e => setAbSearchQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !abSearching && abSearchQuery.trim() && searchCompany()}
+                  disabled={abSearching}
+                  className="search-input-wide"
+                />
+                <button className="btn btn-primary" disabled={abSearching || !abSearchQuery.trim()} onClick={searchCompany}>
+                  {abSearching ? 'Suche läuft...' : 'Suchen'}
+                </button>
+                {abSearchResult && (
+                  <button className="btn btn-ghost" onClick={() => { setAbSearchResult(null); setAbSearchQuery('') }}>Zurücksetzen</button>
+                )}
+              </div>
+
+              {/* Search Results */}
+              {abSearchResult && (
+                <div className="search-results">
+                  <div className="search-result-company">
+                    <strong>{abSearchResult.company.name}</strong>
+                    <span className="sub">{abSearchResult.company.industry} · {abSearchResult.company.country} · {abSearchResult.company.employee_count?.toLocaleString()} Mitarbeiter</span>
+                    {abSearchResult.company.website && <a href={abSearchResult.company.website} target="_blank" rel="noopener noreferrer" className="sub link">{abSearchResult.company.website}</a>}
+                  </div>
+                  <div className="search-result-contacts-header">
+                    <h3>Gefundene Kontakte ({abSearchResult.contacts.length})</h3>
+                    <div className="card-actions">
+                      {abSearchResult.contacts.filter(c => c.email_verified && !abEmails.has(c.email?.toLowerCase())).length > 0 && (
+                        <button className="btn btn-primary btn-sm" disabled={loading} onClick={addAllVerifiedSearchContactsToAB}>
+                          Alle Verifizierten ins Adressbuch ({abSearchResult.contacts.filter(c => c.email_verified && !abEmails.has(c.email?.toLowerCase())).length})
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="list">
+                    {abSearchResult.contacts.map(c => (
+                      <div key={c.id} className="list-item">
+                        <div className="list-main">
+                          <strong>{c.name}</strong>
+                          <span className="sub">{c.title} · {c.company}</span>
+                          <span className="sub">
+                            {c.email || '—'}
+                            {c.email_verified && <span className="verified">✓</span>}
+                            {c.email_risk_level && c.email_risk_level !== 'unknown' && <>{' '}{riskBadge(c.email_risk_level)}</>}
+                          </span>
+                        </div>
+                        <div className="list-actions">
+                          {statusBadge(c.status)}
+                          {c.email_verified && !abEmails.has(c.email?.toLowerCase())
+                            ? <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => addSearchContactToAB(c.id)}>Ins Adressbuch</button>
+                            : c.email_verified && abEmails.has(c.email?.toLowerCase())
+                              ? <span className="badge badge-green">Im Adressbuch</span>
+                              : !c.email
+                                ? <span className="badge badge-gray">Keine E-Mail</span>
+                                : <span className="badge badge-yellow">Nicht verifiziert</span>
+                          }
+                        </div>
+                      </div>
+                    ))}
+                    {abSearchResult.contacts.length === 0 && <p className="empty">Keine Kontakte gefunden.</p>}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Adressbuch-Kontakte ── */}
             <div className="card">
               <div className="card-header">
                 <h2>Kontakte ({addressBook.length})</h2>
@@ -1359,3 +1490,4 @@ function App() {
 }
 
 export default App
+

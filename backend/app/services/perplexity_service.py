@@ -298,6 +298,76 @@ def _eu_location(region: str = "") -> dict:
     return {"country": "DE", "city": "Frankfurt", "latitude": 50.1109, "longitude": 8.6821}
 
 
+
+# ─── 0) Search Single Company (targeted) ──────────────────────
+
+async def search_single_company(
+    company_name: str,
+    api_key: str,
+) -> dict | None:
+    """Search for a single company by name via Perplexity API.
+    Returns company details dict or None if not found.
+    Used by the address book 'targeted search' feature."""
+
+    location = _eu_location()
+
+    system = """You are a B2B company research assistant specializing in European companies.
+Given a company name, find detailed information about this SPECIFIC company.
+Return EXACTLY ONE JSON object (not an array) with these fields:
+name, industry, region, website, linkedInURL, description, size, country, employees, nace_code, founded_year, revenue_range, key_regulations.
+
+CRITICAL RULES:
+- Return ONLY valid JSON. No markdown, no explanation, no code fences.
+- The company must be REAL and currently operating.
+- Full website URL (https://...) and LinkedIn company page URL.
+- "employees" must be a NUMBER (integer), not a string.
+- "region" should be the European region (e.g. "DACH", "Nordics", "UK", "Benelux", "France", "Iberia").
+- "key_regulations" is a comma-separated list of applicable regulations (e.g. "DSGVO, MaRisk, DORA, NIS2").
+- If the company cannot be found or does not exist, return: {"error": "not_found"}"""
+
+    user = f"""Find detailed information about this company: {company_name}
+
+Search across business databases, LinkedIn, company registries, and news sources.
+Return a single JSON object with all fields."""
+
+    try:
+        content_resp = await _call_api(
+            system, user, api_key,
+            max_tokens=2000,
+            model=MODEL_FAST,
+            search_domain_filter=DOMAINS_COMPANY,
+            search_language_filter=["en", "de"],
+            user_location=location,
+            search_context_size="high",
+        )
+        cleaned = _clean_json(content_resp if isinstance(content_resp, str) else content_resp.get("content", ""))
+        data = json.loads(cleaned)
+
+        # Handle error response
+        if isinstance(data, dict) and data.get("error") == "not_found":
+            return None
+
+        # If API returned an array, take the first item
+        if isinstance(data, list):
+            data = data[0] if data else None
+
+        if not data or not isinstance(data, dict):
+            return None
+
+        # Normalize employees to int
+        emp = data.get("employees", 0)
+        if isinstance(emp, str):
+            emp = int(re.sub(r"[^0-9]", "", emp) or "0")
+        data["employees"] = emp
+        data["employee_count"] = emp
+
+        return data
+
+    except Exception as ex:
+        logger.warning(f"[SearchSingleCompany] Failed for {company_name}: {ex}")
+        return None
+
+
 # ─── 1) Find Companies — DEEP RESEARCH with multi-source ────────
 
 async def find_companies(
@@ -1269,3 +1339,4 @@ Generate 3 subject lines. Each MUST contain "{company_name}"."""
         else:
             filtered.append(f"{s} — {company_name}")
     return filtered[:3] or [f"Regulatory Compliance for {company_name}"]
+
