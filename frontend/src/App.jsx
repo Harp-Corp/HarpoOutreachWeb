@@ -1895,7 +1895,7 @@ function App() {
               <p className="sub" style={{marginBottom:'0.75rem'}}>Informationen, die als Absender in E-Mails verwendet werden.</p>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0.75rem',maxWidth:'500px'}}>
                 <div className="form-group"><label>Name</label><input value="Martin Foerster" disabled style={{background:'#f9fafb'}} /></div>
-                <div className="form-group"><label>E-Mail</label><input value="mf@harpocrites-corp.com" disabled style={{background:'#f9fafb'}} /></div>
+                <div className="form-group"><label>E-Mail</label><input value="mf@harpocrates-corp.com" disabled style={{background:'#f9fafb'}} /></div>
               </div>
               <span className="sub">Absender-Konfiguration wird serverseitig verwaltet.</span>
             </div>
