@@ -19,14 +19,14 @@ GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
     """Build a multipart/alternative MIME email with plain text + HTML (professional signature).
+    Uses Python's email library for correct RFC 2045 encoding (proper base64 line wrapping).
     Includes X-Harpo-Campaign header for campaign tracking."""
-    boundary = f"HarpoMIME_{uuid4().hex}"
 
     # Unsubscribe footer
     unsub_url = f"mailto:unsubscribe@harpocrates-corp.com?subject=Unsubscribe&body=Please%20remove%20{to}"
     body_with_opt_out = body + f"\n\n---\nTo unsubscribe from future emails, reply with 'Unsubscribe' or click: {unsub_url}"
 
-    # HTML body
+    # HTML body: convert paragraphs (double newline) and line breaks (single newline)
     html_paragraphs = "\n".join(
         f'<p style="margin:0 0 14px 0;line-height:1.7;color:#2d3748;font-size:14px;font-family:Arial,Helvetica,sans-serif;">'
         f'{"<br>".join(p.split(chr(10)))}</p>'
@@ -39,22 +39,24 @@ def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
 <body style="margin:0;padding:0;background-color:#f7f7f7;">
 <div style="max-width:600px;margin:0 auto;padding:24px;background-color:#ffffff;">
 {html_paragraphs}
-<table cellpadding="0" cellspacing="0" border="0" style="margin-top:32px;border-top:3px solid #1a365d;padding-top:20px;width:100%;">
+<!-- Signature -->
+<table cellpadding="0" cellspacing="0" border="0" style="margin-top:32px;border-top:3px solid #1a365d;padding-top:20px;width:100%;font-family:Arial,Helvetica,sans-serif;">
 <tr>
 <td style="vertical-align:top;padding-right:18px;width:60px;">
 <img src="{logo_url}" alt="Harpocrates" width="52" height="52" style="display:block;border:0;border-radius:6px;">
 </td>
-<td style="vertical-align:top;font-family:Arial,Helvetica,sans-serif;">
-<p style="margin:0 0 2px 0;font-size:16px;font-weight:bold;color:#1a365d;letter-spacing:0.3px;">Martin F\u00f6rster</p>
-<p style="margin:0 0 10px 0;font-size:12px;color:#4a5568;text-transform:uppercase;letter-spacing:0.8px;">CEO & Founder</p>
-<p style="margin:0 0 3px 0;font-size:13px;font-weight:600;color:#2d3748;">Harpocrates Solutions GmbH</p>
+<td style="vertical-align:top;">
+<p style="margin:0 0 2px 0;font-size:16px;font-weight:bold;color:#1a365d;letter-spacing:0.3px;font-family:Arial,Helvetica,sans-serif;">Martin F\u00f6rster</p>
+<p style="margin:0 0 10px 0;font-size:12px;color:#4a5568;text-transform:uppercase;letter-spacing:0.8px;font-family:Arial,Helvetica,sans-serif;">CEO &amp; Founder</p>
+<p style="margin:0 0 3px 0;font-size:13px;font-weight:600;color:#2d3748;font-family:Arial,Helvetica,sans-serif;">Harpocrates Solutions GmbH</p>
 <table cellpadding="0" cellspacing="0" border="0" style="margin-top:6px;">
-<tr><td style="padding:2px 8px 2px 0;font-size:12px;color:#718096;font-family:Arial,Helvetica,sans-serif;">Tel</td><td style="padding:2px 0;font-size:12px;color:#2d3748;font-family:Arial,Helvetica,sans-serif;">+49 172 6348377</td></tr>
+<tr><td style="padding:2px 8px 2px 0;font-size:12px;color:#718096;font-family:Arial,Helvetica,sans-serif;">Tel</td><td style="padding:2px 0;font-size:12px;color:#2d3748;font-family:Arial,Helvetica,sans-serif;"><a href="tel:+491726348377" style="color:#2d3748;text-decoration:none;">+49 172 6348377</a></td></tr>
 <tr><td style="padding:2px 8px 2px 0;font-size:12px;color:#718096;font-family:Arial,Helvetica,sans-serif;">Mail</td><td style="padding:2px 0;font-size:12px;font-family:Arial,Helvetica,sans-serif;"><a href="mailto:mf@harpocrates-corp.com" style="color:#2b6cb0;text-decoration:none;">mf@harpocrates-corp.com</a></td></tr>
 <tr><td style="padding:2px 8px 2px 0;font-size:12px;color:#718096;font-family:Arial,Helvetica,sans-serif;">Web</td><td style="padding:2px 0;font-size:12px;font-family:Arial,Helvetica,sans-serif;"><a href="https://www.harpocrates-corp.com" style="color:#2b6cb0;text-decoration:none;">www.harpocrates-corp.com</a></td></tr>
 </table>
 <p style="margin:6px 0 0 0;font-size:11px;color:#a0aec0;font-family:Arial,Helvetica,sans-serif;">Berlin, Germany</p>
-</td></tr>
+</td>
+</tr>
 </table>
 </div>
 <div style="max-width:600px;margin:0 auto;padding:12px 24px;">
@@ -65,35 +67,24 @@ def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
 </body>
 </html>"""
 
-    # Base64 encode
-    plain_b64 = base64.b64encode(body_with_opt_out.encode("utf-8")).decode("ascii")
-    html_b64 = base64.b64encode(html.encode("utf-8")).decode("ascii")
+    # Build MIME message using Python email library (handles RFC 2045 base64 line wrapping)
+    msg = MIMEMultipart("alternative")
+    msg["From"] = f"Martin Foerster <{from_addr}>"
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["X-Harpo-Campaign"] = "comply-reg"
+    msg["List-Unsubscribe"] = f"<mailto:unsubscribe@harpocrates-corp.com?subject=Unsubscribe>"
+    msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
-    # Encode subject as UTF-8 Base64 (RFC 2047)
-    subj_b64 = base64.b64encode(subject.encode("utf-8")).decode("ascii")
-    encoded_subject = f"=?UTF-8?B?{subj_b64}?="
+    # Plain text part
+    part_plain = MIMEText(body_with_opt_out, "plain", "utf-8")
+    msg.attach(part_plain)
 
-    mime = f"From: Martin Foerster <{from_addr}>\r\n"
-    mime += f"To: {to}\r\n"
-    mime += f"Subject: {encoded_subject}\r\n"
-    mime += "X-Harpo-Campaign: comply-reg\r\n"
-    mime += "List-Unsubscribe: <mailto:unsubscribe@harpocrates-corp.com?subject=Unsubscribe>\r\n"
-    mime += "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
-    mime += "MIME-Version: 1.0\r\n"
-    mime += f'Content-Type: multipart/alternative; boundary="{boundary}"\r\n'
-    mime += "\r\n"
-    mime += f"--{boundary}\r\n"
-    mime += 'Content-Type: text/plain; charset="UTF-8"\r\n'
-    mime += "Content-Transfer-Encoding: base64\r\n"
-    mime += "\r\n"
-    mime += f"{plain_b64}\r\n"
-    mime += f"--{boundary}\r\n"
-    mime += 'Content-Type: text/html; charset="UTF-8"\r\n'
-    mime += "Content-Transfer-Encoding: base64\r\n"
-    mime += "\r\n"
-    mime += f"{html_b64}\r\n"
-    mime += f"--{boundary}--"
-    return mime
+    # HTML part
+    part_html = MIMEText(html, "html", "utf-8")
+    msg.attach(part_html)
+
+    return msg.as_string()
 
 
 async def _gmail_api_send(json_data: dict, access_token: str) -> dict:
