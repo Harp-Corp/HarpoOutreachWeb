@@ -35,6 +35,7 @@ ROLE_PREFIXES = {
 
 # Well-known corporate email domains that definitely exist (skip SMTP check)
 KNOWN_CORPORATE_DOMAINS = {
+    # DACH Banks & Financial Services
     "allianz.com", "db.com", "commerzbank.com", "deutsche-bank.com",
     "siemens.com", "sap.com", "bosch.com", "bmw.com", "daimler.com",
     "volkswagen.de", "basf.com", "bayer.com", "eon.com", "rwe.com",
@@ -45,6 +46,43 @@ KNOWN_CORPORATE_DOMAINS = {
     "lbbw.de", "bayernlb.de", "dz-bank.de", "kfw.de", "helaba.de",
     "nordlb.de", "deka.de", "union-investment.de", "dws.com",
     "herrenknecht.com", "trumpf.com", "zeiss.com", "festo.com",
+    # Additional major European corporates
+    "deutsche-boerse.com", "ing.com", "rabobank.com", "abnamro.com",
+    "bnpparibas.com", "societegenerale.com", "creditagricole.com",
+    "unicredit.de", "unicredit.it", "intesasanpaolo.com",
+    "hsbc.com", "barclays.com", "lloydsbanking.com", "rbs.com",
+    "standardchartered.com", "santander.com", "bbva.com",
+    "raiffeisen.at", "erste-group.com", "wienerstaedtische.at",
+    "swisslife.com", "baloise.com", "helvetia.com",
+    "talanx.com", "hannover-re.com", "scor.com",
+    # Insurance
+    "signal-iduna.de", "gothaer.de", "huk-coburg.de", "debeka.de",
+    "r-v.de", "nuernberger.de", "wuerttembergische.de",
+    "provinzial.com", "vhv-gruppe.de", "lvm.de",
+    # Asset Management / PE
+    "blackrock.com", "vanguard.com", "statestreet.com",
+    "amundi.com", "robeco.com", "nordea.com",
+    # Tech / Big companies
+    "microsoft.com", "google.com", "amazon.com", "apple.com",
+    "meta.com", "oracle.com", "ibm.com", "salesforce.com",
+    "adobe.com", "cisco.com", "dell.com", "hp.com",
+    # German Mittelstand
+    "wacker.com", "evonik.com", "lanxess.com", "symrise.com",
+    "covestro.com", "sartorius.com", "carl-zeiss.com",
+    "mtu.de", "rheinmetall.com", "knorr-bremse.com",
+    "draeger.com", "gea.com", "krones.com", "wilo.com",
+    "viessmann.com", "stihl.de", "wuerth.com", "brose.com",
+    # Swiss
+    "novartis.com", "roche.com", "nestle.com", "abb.com",
+    "julius-baer.com", "vontobel.com", "raiffeisen.ch",
+    # Austrian
+    "voestalpine.com", "omv.com", "verbund.com",
+    # Payment / FinTech
+    "wirecard.com", "adyen.com", "klarna.com", "n26.com",
+    "revolut.com", "stripe.com", "paypal.com",
+    # Consulting
+    "deloitte.com", "pwc.com", "ey.com", "kpmg.com",
+    "mckinsey.com", "bcg.com", "bain.com",
 }
 
 
@@ -52,6 +90,65 @@ def _is_valid_syntax(email: str) -> bool:
     """Check email syntax validity."""
     pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email.strip()))
+
+
+def validate_email_pattern(email: str, person_name: str = "") -> dict:
+    """Validate if an email matches expected corporate patterns for a person.
+    Returns {plausible: bool, reason: str, pattern_type: str}.
+    This helps catch hallucinated emails that have valid syntax but wrong patterns."""
+    result = {"plausible": True, "reason": "", "pattern_type": "unknown"}
+    
+    if not email or "@" not in email:
+        return {"plausible": False, "reason": "Invalid email", "pattern_type": "invalid"}
+    
+    local, domain = email.lower().split("@", 1)
+    
+    # Check for masked/redacted emails
+    if "***" in local or "..." in local or "[email" in local:
+        return {"plausible": False, "reason": "Masked email", "pattern_type": "masked"}
+    
+    # Check for suspicious local parts
+    if len(local) < 2:
+        return {"plausible": False, "reason": "Local part too short", "pattern_type": "suspicious"}
+    if local.count(".") > 3:
+        return {"plausible": False, "reason": "Too many dots in local part", "pattern_type": "suspicious"}
+    
+    # If we have a person's name, check if email plausibly matches
+    if person_name:
+        name_parts = person_name.lower().strip().split()
+        # Remove titles
+        name_parts = [p for p in name_parts if p not in ("dr", "dr.", "prof", "prof.", "ing", "ing.")]
+        if len(name_parts) >= 2:
+            first = name_parts[0]
+            last = name_parts[-1]
+            # Handle German umlauts
+            umlaut_map = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}
+            first_norm = first
+            last_norm = last
+            for k, v in umlaut_map.items():
+                first_norm = first_norm.replace(k, v)
+                last_norm = last_norm.replace(k, v)
+            
+            # Check common patterns
+            if f"{first_norm}.{last_norm}" in local or f"{first_norm[0]}.{last_norm}" in local:
+                result["pattern_type"] = "firstname.lastname"
+            elif f"{first_norm}{last_norm}" in local or f"{first_norm[0]}{last_norm}" in local:
+                result["pattern_type"] = "firstnamelastname"
+            elif f"{last_norm}.{first_norm}" in local:
+                result["pattern_type"] = "lastname.firstname"
+            elif first_norm in local or last_norm in local:
+                result["pattern_type"] = "partial_match"
+            elif first_norm[0] in local and last_norm[:3] in local:
+                result["pattern_type"] = "likely_match"
+            else:
+                # Email doesn't contain any part of the person's name
+                # This is suspicious but not necessarily wrong (could be role-based)
+                if local not in ROLE_PREFIXES:
+                    result["reason"] = f"Email '{local}' does not match name '{person_name}'"
+                    result["pattern_type"] = "name_mismatch"
+                    # Don't mark as implausible — just flag for review
+    
+    return result
 
 
 def _is_disposable(email: str) -> bool:

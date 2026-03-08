@@ -85,10 +85,12 @@ async def _call_api(
     user_location: dict | None = None,
     search_context_size: str = "high",
     return_citations: bool = False,
+    response_format: dict | None = None,
 ) -> str | dict:
     """Call Perplexity API with full filter stack.
 
     When return_citations=True, returns {"content": str, "citations": list}.
+    When response_format is provided, enforces structured JSON output.
     """
     payload: dict[str, Any] = {
         "model": model,
@@ -99,6 +101,10 @@ async def _call_api(
         "max_tokens": max_tokens,
         "web_search_options": {"search_context_size": search_context_size},
     }
+
+    # Structured JSON output (enforced by API, much more reliable than prompt-only)
+    if response_format:
+        payload["response_format"] = response_format
 
     # Location filter (EU-centric by default)
     if user_location:
@@ -273,8 +279,90 @@ def _normalize_name(name: str) -> str:
 def _clean_email(email: str) -> str:
     t = email.strip()
     if "@" in t and "." in t:
-        return t.lower()
+        cleaned = t.lower()
+        # Filter out masked/redacted emails from paywalled sources (ZoomInfo, Apollo etc.)
+        local = cleaned.split("@")[0]
+        if "***" in local or "*" * 3 in local or "..." in local:
+            return ""  # Masked email like m***@db.com is useless
+        if local.startswith("[email") or "[at]" in cleaned:
+            return ""  # Obfuscated
+        if len(local) < 2:
+            return ""  # Too short to be real
+        return cleaned
     return ""
+
+
+def _derive_email_from_pattern(name: str, domain: str, pattern: str = "") -> list[str]:
+    """Derive plausible email addresses from a person's name and company domain.
+    Returns a list of candidates sorted by likelihood."""
+    if not name or not domain:
+        return []
+
+    parts = name.strip().split()
+    if len(parts) < 2:
+        return []
+
+    # Handle German umlauts
+    umlaut_map = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+                  "Ä": "Ae", "Ö": "Oe", "Ü": "Ue"}
+    def normalize(s):
+        for k, v in umlaut_map.items():
+            s = s.replace(k, v)
+        return s.lower().strip().replace(" ", "")
+
+    first = normalize(parts[0])
+    last = normalize(parts[-1])
+
+    # Strip academic titles
+    if first in ("dr", "prof", "ing"):
+        if len(parts) >= 3:
+            first = normalize(parts[1])
+            last = normalize(parts[-1])
+        else:
+            return []
+
+    candidates = [
+        f"{first}.{last}@{domain}",       # martin.foerster@domain.com (most common)
+        f"{first[0]}.{last}@{domain}",     # m.foerster@domain.com
+        f"{first}{last}@{domain}",          # martinfoerster@domain.com
+        f"{first[0]}{last}@{domain}",       # mfoerster@domain.com
+        f"{last}.{first}@{domain}",         # foerster.martin@domain.com
+        f"{first}.{last[0]}@{domain}",      # martin.f@domain.com
+        f"{first}_{last}@{domain}",         # martin_foerster@domain.com
+        f"{first}-{last}@{domain}",         # martin-foerster@domain.com
+    ]
+
+    # If a pattern is provided, prioritize matching pattern
+    if pattern:
+        pattern_lower = pattern.lower()
+        if "firstname.lastname" in pattern_lower or "vorname.nachname" in pattern_lower:
+            candidates.insert(0, f"{first}.{last}@{domain}")
+        elif "f.lastname" in pattern_lower or "initial" in pattern_lower:
+            candidates.insert(0, f"{first[0]}.{last}@{domain}")
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+def _normalize_company_name(name: str) -> str:
+    """Normalize company name for duplicate detection.
+    E.g. 'Bayerische Landesbank (BayernLB)' and 'BayernLB' should match."""
+    n = name.lower().strip()
+    # Remove common suffixes
+    for suffix in [" ag", " se", " gmbh", " sa", " ltd", " plc", " & co.",
+                   " & co", " kg", " kgaa", " e.v.", " eg", " mbh"]:
+        n = n.replace(suffix, "")
+    # Remove content in parentheses
+    n = re.sub(r"\([^)]*\)", "", n)
+    # Remove special characters
+    n = re.sub(r"[^a-z0-9äöüß ]", "", n)
+    return " ".join(n.split()).strip()
 
 
 # ─── EU location helper ─────────────────────────────────────────
@@ -375,17 +463,55 @@ Return a single JSON object with all fields."""
 
 # ─── 1) Find Companies — DEEP RESEARCH with multi-source ────────
 
+# JSON Schema for structured company output (enforced by Perplexity API)
+_COMPANY_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "company_list",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "companies": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "industry": {"type": "string"},
+                            "region": {"type": "string"},
+                            "website": {"type": "string"},
+                            "linkedInURL": {"type": "string"},
+                            "description": {"type": "string"},
+                            "size": {"type": "string"},
+                            "country": {"type": "string"},
+                            "employees": {"type": "integer"},
+                            "nace_code": {"type": "string"},
+                            "founded_year": {"type": "string"},
+                            "revenue_range": {"type": "string"},
+                            "key_regulations": {"type": "string"},
+                        },
+                        "required": ["name", "industry", "country", "employees"],
+                    },
+                },
+            },
+            "required": ["companies"],
+        },
+    },
+}
+
+
 async def find_companies(
     industry_value: str,
     region_countries: str,
     api_key: str,
     size_filter: str = "",
 ) -> list[dict]:
-    """Use sonar-pro with domain-filtered search across business directories,
-    company databases, and LinkedIn. Two passes:
+    """Use sonar-pro with structured JSON output + sharper industry filtering.
+    Two passes:
     1) Major players + compliance-relevant companies
     2) Hidden Champions supplement
-    size_filter: optional, e.g. '5001+', '201-5000', '0-200' to constrain employee count."""
+    Includes fuzzy dedup via _normalize_company_name.
+    """
 
     # Build dynamic size constraint for the prompt
     if "5001" in size_filter or "5.001" in size_filter:
@@ -397,82 +523,107 @@ async def find_companies(
     else:
         size_constraint = "Any size — from large corporates to Mittelstand Hidden Champions."
 
-    system = f"""You are a B2B company research assistant specializing in European enterprise companies and their regulatory compliance landscape.
-You MUST return EXACTLY 25 real companies as a JSON array.
-Each object MUST have: name, industry, region, website, linkedInURL, description, size, country, employees, nace_code, founded_year, revenue_range, key_regulations.
+    system = f"""You are a B2B company research assistant specializing in European enterprise companies.
+Return a JSON object with a "companies" array containing EXACTLY 25 real companies.
 
-CRITICAL RULES:
-- Return ONLY valid JSON. No markdown, no explanation.
-- All 25 companies must be REAL, currently operating.
-- Full website URL (https://...) and LinkedIn company page URL.
-- "employees" = realistic integer. Research the ACTUAL current number. NEVER use 0.
-- "key_regulations" = specific regulations that apply (e.g. "DORA, NIS2, GDPR, MiCA, PSD2, CSRD, EU AI Act, AML6, AMLD").
-- "revenue_range" = approximate revenue (e.g. "500M-1B EUR", "10B+ EUR").
+CRITICAL INDUSTRY RULE:
+The user searches for "{industry_value}". Return ONLY companies whose PRIMARY business activity is {industry_value}.
+- A company's PRIMARY business is its main revenue source and core activity.
+- Do NOT include companies that merely have a subsidiary, department, or division in {industry_value}.
+- Example: If searching for "Finanzdienstleistungen" (Financial Services), return banks, insurance, asset managers, payment providers — NOT Volkswagen (automotive), Deutsche Telekom (telecom), or Bosch (engineering) even though they have financial arms.
+- Example: If searching for "Automobilindustrie", return car manufacturers, auto suppliers — NOT banks that finance cars.
+
+CRITICAL VALIDATION:
+- Every company MUST be REAL, currently operating, and verifiable.
+- "employees" MUST be a realistic integer > 0. Research the actual number.
+- "website" MUST be a real, working company website URL (https://...).
+- "linkedInURL" MUST be a real LinkedIn company page URL (https://www.linkedin.com/company/...).
+- Do NOT invent or hallucinate company names. If unsure, omit.
+- Each company must be UNIQUE — no duplicates or name variations of the same entity.
 
 EMPLOYEE SIZE FILTER: {size_constraint}
 
-PRIORITY ORDER — rank by COMPLIANCE RELEVANCE, not by company size:
-1. Companies in HIGHLY REGULATED sub-sectors (financial services subsidiaries, chemicals, pharma, defense, critical infrastructure, energy)
+PRIORITY ORDER — rank by COMPLIANCE RELEVANCE:
+1. Companies in HIGHLY REGULATED sub-sectors of {industry_value}
 2. Companies facing IMMINENT regulatory deadlines or known compliance challenges
 3. Companies recently fined or under regulatory scrutiny
-4. Obvious major players that EVERYONE knows in this industry (e.g. for Manufacturing/DACH: Volkswagen, BMW, Mercedes-Benz, Porsche, Siemens, Bosch, ThyssenKrupp — do NOT omit these)
-5. Hidden Champions — lesser-known but highly regulated mid-size firms (Mittelstand world market leaders, SDAX/MDAX-listed, specialized manufacturers subject to export controls, REACH, dual-use regulations, etc.)
+4. Major players that EVERYONE knows in {industry_value}
+5. Hidden Champions — lesser-known but highly regulated mid-size firms
 
-IMPORTANT:
-- Do NOT skip obvious household-name companies that belong to this industry. If someone would say "you forgot VW" — that means VW must be in the list.
-- BUT ALSO include non-obvious Hidden Champions that have strong compliance needs.
-- Aim for roughly: 60% well-known companies + 40% Hidden Champions / lesser-known but compliance-relevant firms."""
+Aim for roughly 60% well-known + 40% Hidden Champions."""
 
-    user = f"""Find exactly 25 real {industry_value} companies in {region_countries}.
+    user = f"""Find exactly 25 real companies whose PRIMARY business is {industry_value} in {region_countries}.
 
 Employee filter: {size_constraint}
 
-Search strategy:
-1. Start with the OBVIOUS major players in {industry_value} in {region_countries}. Do not skip any company that a professional in this industry would immediately name.
-2. Then add HIDDEN CHAMPIONS — lesser-known companies with high compliance relevance:
-   - Companies subject to strict EU regulations (DORA, NIS2, CSRD, REACH, dual-use export controls, GDPR special categories)
-   - Companies recently in regulatory news (fines, audits, new compliance requirements)
-   - Mittelstand world market leaders in regulated niches
-   - Companies in critical infrastructure or supply chain security scope
-3. For each company, list which specific regulations apply to them.
+IMPORTANT: Only companies where {industry_value} is the CORE business — not companies with a minor division in this field.
 
-Search stock indices (DAX, MDAX, SDAX, SMI, ATX), Handelsregister, Mittelstand rankings, BaFin/EBA regulated entity lists, LinkedIn, Crunchbase, industry associations.
-Return ALL 25 as a single JSON array."""
+Search stock indices (DAX, MDAX, SDAX, SMI, ATX), BaFin/EBA regulated entity lists, LinkedIn, Crunchbase, industry associations, Handelsregister.
+Include both well-known leaders and Hidden Champions.
+For each company, list specific EU regulations that apply (DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, etc.).
+
+Return as JSON object with "companies" array."""
 
     location = _eu_location(region_countries)
 
-    # Pass 1: Major players + regulated companies
-    content1 = await _call_api(
-        system, user, api_key,
-        max_tokens=8000,
-        model=MODEL_FAST,
-        search_domain_filter=DOMAINS_COMPANY,
-        search_language_filter=["en", "de", "fr", "nl", "sv"],
-        user_location=location,
-        search_context_size="high",
-    )
-    raw1 = _parse_json_array(content1 if isinstance(content1, str) else content1.get("content", ""))
+    # Pass 1: Major players + regulated companies (with structured JSON output)
+    try:
+        content1 = await _call_api(
+            system, user, api_key,
+            max_tokens=8000,
+            model=MODEL_FAST,
+            search_domain_filter=DOMAINS_COMPANY,
+            search_language_filter=["en", "de", "fr", "nl", "sv"],
+            user_location=location,
+            search_context_size="high",
+            response_format=_COMPANY_JSON_SCHEMA,
+        )
+        raw_text = content1 if isinstance(content1, str) else content1.get("content", "")
+        parsed = json.loads(_clean_json(raw_text))
+        if isinstance(parsed, dict) and "companies" in parsed:
+            raw1 = [
+                {k: str(v) if not isinstance(v, (int, float)) else str(v) for k, v in item.items()}
+                for item in parsed["companies"] if isinstance(item, dict)
+            ]
+        elif isinstance(parsed, list):
+            raw1 = [{k: str(v) for k, v in item.items()} for item in parsed if isinstance(item, dict)]
+        else:
+            raw1 = []
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning(f"[FindCompanies] Structured output parse failed, falling back: {e}")
+        content1 = await _call_api(
+            system, user, api_key,
+            max_tokens=8000,
+            model=MODEL_FAST,
+            search_domain_filter=DOMAINS_COMPANY,
+            search_language_filter=["en", "de", "fr", "nl", "sv"],
+            user_location=location,
+            search_context_size="high",
+        )
+        raw1 = _parse_json_array(content1 if isinstance(content1, str) else content1.get("content", ""))
 
-    # Pass 2: Hidden Champions supplement — specifically search for lesser-known regulated firms
+    # Pass 2: Hidden Champions supplement
     system2 = f"""You are a compliance-focused company researcher. Find HIDDEN CHAMPIONS — lesser-known but highly regulated companies.
+CRITICAL: Only companies whose PRIMARY business is {industry_value}. No companies from other industries.
 Focus on: Mittelstand world market leaders, SDAX-listed firms, companies subject to export controls, REACH, dual-use regulations, critical infrastructure (NIS2 scope), or sector-specific compliance.
-Return a JSON array. Each object: name, industry, region, website, linkedInURL, description, size, country, employees, nace_code, key_regulations.
-Employee filter: {size_constraint}
-Return ONLY valid JSON."""
+Return a JSON object with a "companies" array. Each object: name, industry, region, website, linkedInURL, description, size, country, employees (integer), nace_code, founded_year, revenue_range, key_regulations.
+Employee filter: {size_constraint}"""
 
     already_found = ", ".join(d.get("name", "") for d in raw1[:30])
-    need = max(25 - len(raw1), 5)  # always look for at least 5 more
-    user2 = f"""Find {need} MORE {industry_value} companies in {region_countries} that are NOT in this list: {already_found}
+    need = max(25 - len(raw1), 5)
+    user2 = f"""Find {need} MORE companies whose PRIMARY business is {industry_value} in {region_countries}.
+These companies must NOT be in this list: {already_found}
 
-Focus on HIDDEN CHAMPIONS and lesser-known companies with HIGH compliance relevance:
+CRITICAL: Only companies where {industry_value} is the CORE business.
+
+Focus on HIDDEN CHAMPIONS:
 - Mittelstand firms with world-market-leading positions in regulated niches
 - Companies newly in scope of NIS2, CSRD, or EU AI Act
-- Manufacturers subject to REACH, dual-use export controls, or defense procurement rules
 - Companies recently in BaFin/regulatory news
-- Family-owned enterprises with complex compliance needs (anti-money laundering, supply chain due diligence, Lieferkettengesetz)
+- Family-owned enterprises with complex compliance needs
 
-Search Mittelstand rankings, SDAX listings, industry association member lists, BaFin regulated entity registers, Handelsregister.
-Return JSON array."""
+Search Mittelstand rankings, SDAX listings, industry association member lists, BaFin regulated entity registers.
+Return JSON object with "companies" array."""
 
     try:
         content2 = await _call_api(
@@ -483,29 +634,59 @@ Return JSON array."""
             search_language_filter=["en", "de"],
             user_location=location,
             search_context_size="high",
+            response_format=_COMPANY_JSON_SCHEMA,
         )
-        raw2 = _parse_json_array(content2 if isinstance(content2, str) else content2.get("content", ""))
-        existing_names = {d.get("name", "").lower() for d in raw1}
+        raw_text2 = content2 if isinstance(content2, str) else content2.get("content", "")
+        parsed2 = json.loads(_clean_json(raw_text2))
+        if isinstance(parsed2, dict) and "companies" in parsed2:
+            raw2 = [
+                {k: str(v) if not isinstance(v, (int, float)) else str(v) for k, v in item.items()}
+                for item in parsed2["companies"] if isinstance(item, dict)
+            ]
+        elif isinstance(parsed2, list):
+            raw2 = [{k: str(v) for k, v in item.items()} for item in parsed2 if isinstance(item, dict)]
+        else:
+            raw2 = []
+        # Fuzzy dedup against pass 1
+        existing_norms = {_normalize_company_name(d.get("name", "")) for d in raw1}
         for item in raw2:
-            if item.get("name", "").lower() not in existing_names:
+            norm = _normalize_company_name(item.get("name", ""))
+            if norm and norm not in existing_norms:
                 raw1.append(item)
-    except Exception:
-        pass
+                existing_norms.add(norm)
+    except Exception as e:
+        logger.warning(f"[FindCompanies] Pass 2 failed: {e}")
 
-    # Normalize results
+    # Normalize results + fuzzy dedup
     companies = []
-    for d in raw1[:35]:  # allow a few extra, prospecting.py filters by size
+    seen_norms: set[str] = set()
+    for d in raw1[:40]:
+        name = d.get("name", "Unknown").strip()
+        if not name or name == "Unknown":
+            continue
+        norm = _normalize_company_name(name)
+        if norm in seen_norms:
+            continue  # Skip fuzzy duplicate
+        seen_norms.add(norm)
+
         emp_raw = d.get("employees", "0")
         emp_cleaned = str(emp_raw).replace(",", "").replace(".", "").strip()
         try:
             emp = int(emp_cleaned)
         except ValueError:
             emp = 0
+
+        website = d.get("website", "")
+        # Skip companies with no employees AND no website (likely hallucinated)
+        if emp == 0 and not website:
+            logger.info(f"[FindCompanies] Skipping {name}: no employees and no website")
+            continue
+
         companies.append({
-            "name": d.get("name", "Unknown"),
+            "name": name,
             "industry": d.get("industry", industry_value),
             "region": d.get("region", ""),
-            "website": d.get("website", ""),
+            "website": website,
             "linkedin_url": d.get("linkedInURL", d.get("linkedin_url", "")),
             "description": d.get("description", ""),
             "size": d.get("size", ""),
@@ -513,10 +694,45 @@ Return JSON array."""
             "employee_count": emp,
             "nace_code": d.get("nace_code", ""),
         })
+
+    logger.info(f"[FindCompanies] Returning {len(companies)} companies for {industry_value}/{region_countries}")
     return companies
 
 
 # ─── 2) Find Contacts — MULTI-PASS with domain-targeted searches ─
+
+# JSON Schema for structured contact output
+_CONTACT_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "contact_list",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "contacts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "title": {"type": "string"},
+                            "email": {"type": "string"},
+                            "linkedInURL": {"type": "string"},
+                            "phone": {"type": "string"},
+                            "source": {"type": "string"},
+                            "seniority_level": {"type": "string"},
+                        },
+                        "required": ["name", "title"],
+                    },
+                },
+                "company_email_domain": {"type": "string"},
+                "company_email_pattern": {"type": "string"},
+            },
+            "required": ["contacts"],
+        },
+    },
+}
+
 
 async def find_contacts(
     company_name: str,
@@ -525,24 +741,33 @@ async def find_contacts(
     company_website: str,
     api_key: str,
 ) -> list[dict]:
-    """Three-pass contact search:
+    """Four-pass contact search:
     1) LinkedIn/XING/theorg.com for org charts and profiles
-    2) Business directories (ZoomInfo, Apollo, Lusha, RocketReach)
-    3) Company website + press releases + regulatory filings
+    2) Company website + press releases + regulatory filings
+    3) Google/general web search for compliance contacts
+    4) Email pattern derivation for contacts without emails
+    
+    Note: Pass 2 no longer searches paywalled directories (ZoomInfo, Apollo, Lusha)
+    because Perplexity cannot extract data from behind paywalls — it returns
+    masked emails (m***@db.com) or hallucinated data.
     """
     location = _eu_location(company_region)
 
+    # Extract company domain for email derivation later
+    company_domain = ""
+    if company_website:
+        company_domain = company_website.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
+
     # ─── Pass 1: Professional networks (LinkedIn, XING, theorg) ───
     system1 = """You are a B2B research assistant. Search professional networks to find compliance, legal, regulatory, and risk management professionals.
-Return a JSON array. Each object: name, title, email, linkedInURL, phone, source, seniority_level.
-- name: Full name
-- title: Job title
-- email: Email if found, empty string if not
-- linkedInURL: LinkedIn or XING profile URL
-- phone: Phone if found, empty string if not
-- source: Where found (e.g. "LinkedIn", "XING", "theorg.com")
+Return a JSON object with a "contacts" array, plus "company_email_domain" and "company_email_pattern" if found.
+Each contact object: name, title, email (empty string if not found), linkedInURL, phone, source, seniority_level.
 - seniority_level: "C-Level", "VP", "Director", "Manager", "Other"
-IMPORTANT: Return ALL people found. Include compliance, legal, regulatory, data protection, risk management, GRC roles."""
+CRITICAL: 
+- Return ONLY real people you can verify from LinkedIn/XING profiles.
+- Do NOT invent names or titles. If you can't find someone, return fewer contacts.
+- Email addresses must be REAL and COMPLETE — no masked emails (no ***), no placeholder emails.
+- If you don't have a verified email, leave it as empty string."""
 
     user1 = f"""Find compliance and regulatory professionals at {company_name}.
 Industry: {company_industry}, Region: {company_region}, Website: {company_website}
@@ -554,9 +779,9 @@ Target roles:
 - Head of Risk / Chief Risk Officer (CRO)
 - Geldwäschebeauftragter (MLRO), AML Officer
 - Head of GRC, Information Security Officer (CISO)
-- Vorstand, Geschäftsführung with compliance responsibility
 Search LinkedIn profiles, XING profiles, theorg.com org charts for {company_name}.
-Return ALL found as JSON array."""
+Also identify the company email pattern if visible (e.g. firstname.lastname@domain.com).
+Return JSON object with "contacts" array."""
 
     content1 = await _call_api(
         system1, user1, api_key,
@@ -566,78 +791,116 @@ Return ALL found as JSON array."""
         search_language_filter=["en", "de"],
         user_location=location,
         search_context_size="high",
+        response_format=_CONTACT_JSON_SCHEMA,
     )
-    pass1 = _parse_json_array(content1 if isinstance(content1, str) else content1.get("content", ""))
+    raw1 = content1 if isinstance(content1, str) else content1.get("content", "")
+    pass1 = []
+    email_pattern = ""
+    email_domain = company_domain
+    try:
+        parsed1 = json.loads(_clean_json(raw1))
+        if isinstance(parsed1, dict):
+            contacts_list = parsed1.get("contacts", [])
+            pass1 = [{k: str(v) for k, v in item.items()} for item in contacts_list if isinstance(item, dict)]
+            email_pattern = parsed1.get("company_email_pattern", "")
+            found_domain = parsed1.get("company_email_domain", "")
+            if found_domain and "." in found_domain:
+                email_domain = found_domain
+        elif isinstance(parsed1, list):
+            pass1 = [{k: str(v) for k, v in item.items()} for item in parsed1 if isinstance(item, dict)]
+    except (json.JSONDecodeError, Exception):
+        pass1 = _parse_json_array(raw1)
     logger.info(f"[FindContacts] Pass 1 (networks): {len(pass1)} for {company_name}")
 
-    # ─── Pass 2: Business directories ─────────────────────────────
-    system2 = """You are a research assistant specializing in finding business professionals through directories and databases.
-Return a JSON array. Each object: name, title, email, linkedInURL, phone, source, seniority_level.
-Search ZoomInfo, Apollo.io, RocketReach, Lusha, Hunter.io, SignalHire for contact data.
-Return ALL people found with emails when available."""
+    # ─── Pass 2: Company website, press, regulatory filings ───────
+    # (Replaces old Pass 2 which searched paywalled directories)
+    system2 = """You are a research assistant. Search company websites, press releases, regulatory filings, annual reports, and conference speaker lists.
+Return a JSON object with a "contacts" array. Each object: name, title, email, linkedInURL, phone, source, seniority_level.
+Look at:
+- Company team/about/leadership/impressum pages
+- Press releases mentioning compliance or legal hires
+- Regulatory filings (BaFin, FCA registrations)
+- Annual reports and corporate governance sections
+- Conference speaker lists from compliance events
+CRITICAL: Only return REAL people. Do NOT hallucinate names or emails."""
 
     already_names = ", ".join(d.get("name", "") for d in pass1[:10])
-    user2 = f"""Find compliance, legal, and regulatory contacts at {company_name} ({company_industry}).
-Website: {company_website}
+    website_domains = [d for d in [company_domain, "bafin.de", "handelsregister.de", "companyhouse.gov.uk"] if d]
+    user2 = f"""Find compliance, legal, and regulatory professionals at {company_name}.
+Company website: {company_website}
 Already found (avoid duplicates): {already_names}
-Search business contact databases: ZoomInfo, Apollo.io, RocketReach, Lusha, Hunter.io, SignalHire.
-Focus on finding email addresses and phone numbers for compliance and legal professionals.
-Return JSON array."""
+Search the company website ({company_website}), especially team/about/impressum/leadership pages.
+Search press releases about {company_name} compliance hires.
+Search regulatory registrations and filings mentioning {company_name}.
+Return JSON object with "contacts" array."""
 
     try:
         content2 = await _call_api(
             system2, user2, api_key,
             max_tokens=4000,
             model=MODEL_FAST,
-            search_domain_filter=["zoominfo.com", "apollo.io", "rocketreach.co", "lusha.com", "hunter.io", "signalhire.com"],
-            search_language_filter=["en", "de"],
-            user_location=location,
-            search_context_size="high",
-        )
-        pass2 = _parse_json_array(content2 if isinstance(content2, str) else content2.get("content", ""))
-        logger.info(f"[FindContacts] Pass 2 (directories): {len(pass2)} for {company_name}")
-    except Exception:
-        pass2 = []
-
-    # ─── Pass 3: Company website, press, regulatory filings ───────
-    system3 = """You are a research assistant. Search company websites, press releases, regulatory filings, annual reports, and conference speaker lists.
-Return a JSON array. Each object: name, title, email, linkedInURL, phone, source, seniority_level.
-Look at:
-- Company team/about/leadership/impressum pages
-- Press releases mentioning compliance or legal hires
-- Regulatory filings (BaFin, FCA, SEC registrations)
-- Annual reports and corporate governance sections
-- Conference speaker lists from compliance events
-- Handelsregister entries
-Return ALL people found."""
-
-    # Extract company domain for targeted search
-    domain = ""
-    if company_website:
-        domain = company_website.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
-
-    website_domains = [d for d in [domain, "bafin.de", "handelsregister.de", "companyhouse.gov.uk"] if d]
-    user3 = f"""Find compliance, legal, and regulatory professionals at {company_name}.
-Company website: {company_website}
-Already found: {already_names}
-Search the company website ({company_website}), especially team/about/impressum/leadership pages.
-Search press releases about {company_name} compliance hires.
-Search regulatory registrations and filings mentioning {company_name}.
-Search annual reports and corporate governance documents.
-Return JSON array."""
-
-    try:
-        content3 = await _call_api(
-            system3, user3, api_key,
-            max_tokens=4000,
-            model=MODEL_FAST,
             search_domain_filter=website_domains[:20],
             search_language_filter=["en", "de"],
             user_location=location,
             search_context_size="high",
+            response_format=_CONTACT_JSON_SCHEMA,
         )
-        pass3 = _parse_json_array(content3 if isinstance(content3, str) else content3.get("content", ""))
-        logger.info(f"[FindContacts] Pass 3 (website/press): {len(pass3)} for {company_name}")
+        raw2 = content2 if isinstance(content2, str) else content2.get("content", "")
+        try:
+            parsed2 = json.loads(_clean_json(raw2))
+            if isinstance(parsed2, dict):
+                pass2 = [{k: str(v) for k, v in item.items()} for item in parsed2.get("contacts", []) if isinstance(item, dict)]
+                # Pick up email pattern/domain from pass 2 if not found in pass 1
+                if not email_pattern and parsed2.get("company_email_pattern"):
+                    email_pattern = parsed2["company_email_pattern"]
+                if not email_domain and parsed2.get("company_email_domain"):
+                    email_domain = parsed2["company_email_domain"]
+            elif isinstance(parsed2, list):
+                pass2 = [{k: str(v) for k, v in item.items()} for item in parsed2 if isinstance(item, dict)]
+            else:
+                pass2 = []
+        except (json.JSONDecodeError, Exception):
+            pass2 = _parse_json_array(raw2)
+        logger.info(f"[FindContacts] Pass 2 (website/press): {len(pass2)} for {company_name}")
+    except Exception:
+        pass2 = []
+
+    # ─── Pass 3: General web search ──────────────────────────────
+    system3 = """You are a research assistant finding compliance professionals via general web search.
+Return a JSON object with a "contacts" array. Each object: name, title, email, linkedInURL, phone, source, seniority_level.
+Search Google for names, conference speaker lists, published articles, podcast appearances, panel discussions.
+CRITICAL: Only return REAL people you can verify. No invented names or emails."""
+
+    user3 = f"""Find compliance and regulatory professionals at {company_name} ({company_industry}).
+Already found: {already_names}
+Search for:
+- "{company_name}" compliance officer OR "head of compliance" OR CCO
+- Conference speakers from {company_name} at compliance/regulatory events
+- Published articles by compliance professionals at {company_name}
+Return JSON object with "contacts" array."""
+
+    try:
+        content3 = await _call_api(
+            system3, user3, api_key,
+            max_tokens=3000,
+            model=MODEL_FAST,
+            search_language_filter=["en", "de"],
+            user_location=location,
+            search_context_size="high",
+            response_format=_CONTACT_JSON_SCHEMA,
+        )
+        raw3 = content3 if isinstance(content3, str) else content3.get("content", "")
+        try:
+            parsed3 = json.loads(_clean_json(raw3))
+            if isinstance(parsed3, dict):
+                pass3 = [{k: str(v) for k, v in item.items()} for item in parsed3.get("contacts", []) if isinstance(item, dict)]
+            elif isinstance(parsed3, list):
+                pass3 = [{k: str(v) for k, v in item.items()} for item in parsed3 if isinstance(item, dict)]
+            else:
+                pass3 = []
+        except (json.JSONDecodeError, Exception):
+            pass3 = _parse_json_array(raw3)
+        logger.info(f"[FindContacts] Pass 3 (web search): {len(pass3)} for {company_name}")
     except Exception:
         pass3 = []
 
@@ -654,8 +917,9 @@ Return JSON array."""
             # Merge: if we already have this person but new pass has more data, update
             for existing in leads:
                 if _normalize_name(existing["name"]) == norm:
-                    if not existing["email"] and c.get("email"):
-                        existing["email"] = _clean_email(c.get("email", ""))
+                    email_candidate = _clean_email(c.get("email", ""))
+                    if not existing["email"] and email_candidate:
+                        existing["email"] = email_candidate
                     if not existing["linkedin_url"] and c.get("linkedInURL"):
                         existing["linkedin_url"] = c.get("linkedInURL", "")
                     if not existing.get("phone") and c.get("phone"):
@@ -675,11 +939,77 @@ Return JSON array."""
             "source": c.get("source", "Perplexity Search"),
         })
 
+    # ─── Pass 4: Email pattern derivation for contacts without email ─
+    if email_domain:
+        for lead in leads:
+            if not lead["email"]:
+                candidates = _derive_email_from_pattern(lead["name"], email_domain, email_pattern)
+                if candidates:
+                    # Use the most likely pattern as the email (will be verified later)
+                    lead["email"] = candidates[0]
+                    lead["source"] = f"{lead['source']} + Pattern-derived ({email_domain})"
+                    logger.info(f"[FindContacts] Derived email for {lead['name']}: {candidates[0]}")
+
     logger.info(f"[FindContacts] Total deduplicated: {len(leads)} for {company_name}")
     return leads
 
 
-# ─── 3) Verify Email — 3-PASS with targeted domain searches ─────
+# ─── 3) Verify Email — STRICT multi-source verification ─────────
+
+# JSON Schema for structured verification output
+_VERIFY_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "email_verification",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "emails": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "email": {"type": "string"},
+                            "source": {"type": "string"},
+                            "confidence": {"type": "string"},
+                        },
+                        "required": ["email", "source", "confidence"],
+                    },
+                },
+                "company_email_pattern": {"type": "string"},
+                "company_domain": {"type": "string"},
+                "notes": {"type": "string"},
+            },
+            "required": ["emails"],
+        },
+    },
+}
+
+_CROSSVERIFY_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "email_crossverification",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "best_email": {"type": "string"},
+                "verified": {"type": "boolean"},
+                "confidence": {"type": "string"},
+                "reasoning": {"type": "string"},
+                "alternative_emails": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "verification_sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["best_email", "verified", "confidence", "reasoning"],
+        },
+    },
+}
+
 
 async def verify_email(
     lead_name: str,
@@ -689,10 +1019,17 @@ async def verify_email(
     lead_linkedin: str,
     api_key: str,
 ) -> dict:
-    """Three-pass verification:
-    1) Email databases (Hunter, ZoomInfo, Apollo, etc.)
-    2) Professional networks (LinkedIn, XING)
+    """STRICT three-pass verification with higher bar for 'verified':
+    1) Professional networks + company website (NOT paywalled directories)
+    2) General web search for email mentions
     3) Cross-verification with reasoning model
+
+    VERIFICATION CRITERIA (stricter than before):
+    - verified=True requires: high confidence from reasoning model
+      OR same email confirmed by 2+ independent sources
+    - Single medium-confidence source is NOT sufficient for verified=True
+    - Pattern-derived emails without independent confirmation = NOT verified
+    
     Returns {email, verified, notes}.
     """
     all_emails: list[dict] = []
@@ -703,23 +1040,23 @@ async def verify_email(
     if lead_email and "@" in lead_email:
         company_domain = lead_email.split("@")[1]
 
-    # ─── Pass 1: Email databases ──────────────────────────────────
-    system1 = """You are an expert at finding verified business email addresses from email databases and contact platforms.
-Search EXHAUSTIVELY across:
-1. Hunter.io - email finder and verifier
-2. ZoomInfo - contact database
-3. Apollo.io - B2B contact data
-4. RocketReach - professional emails
-5. Lusha - business contact info
-6. SignalHire - professional contact data
-7. Clearbit - company data
-8. Kaspr - LinkedIn email finder
-Return JSON:
+    # ─── Pass 1: Professional networks + company website ─────────
+    system1 = """You are an expert at finding verified business email addresses.
+Search LinkedIn profiles (contact info sections), XING profiles, company websites (impressum, team, about pages), and public directories.
+Return a JSON object with:
 - emails: [{email, source, confidence}] where confidence = "high"/"medium"/"low"
-- company_email_pattern: the naming convention (e.g. "firstname.lastname@domain.com")
-- pattern_examples: other verified emails at this company
+  - "high" = email directly visible on official source (LinkedIn profile, company website, regulatory filing)
+  - "medium" = email mentioned on a third-party site or in a press release
+  - "low" = email inferred or from an unreliable source
+- company_email_pattern: naming convention (e.g. "firstname.lastname@domain.com")
 - company_domain: the company's primary email domain
-- notes: additional context"""
+- notes: additional context
+
+CRITICAL:
+- Return ONLY complete, unmasked email addresses.
+- Do NOT return masked emails like m***@domain.com or j...@domain.com.
+- Do NOT invent or guess email addresses. Only return emails you actually found.
+- If you cannot find a verified email, return an empty emails array."""
 
     user1 = f"""Find the business email for:
 Name: {lead_name}
@@ -727,29 +1064,30 @@ Title: {lead_title}
 Company: {lead_company}
 Known email (may be wrong): {lead_email}
 LinkedIn: {lead_linkedin}
-Search Hunter.io, ZoomInfo, Apollo, RocketReach, Lusha, SignalHire for this person's email.
-Also find the company email pattern by looking at other employees' emails.
-Return JSON."""
+Search their LinkedIn profile contact section, XING profile, company website impressum/team pages.
+Also determine the company email pattern by looking at other employees' public emails.
+Return JSON object."""
 
     try:
         content1 = await _call_api(
             system1, user1, api_key,
             max_tokens=4000,
             model=MODEL_FAST,
-            search_domain_filter=DOMAINS_EMAIL,
+            search_domain_filter=["linkedin.com", "xing.com"],
             search_language_filter=["en", "de"],
             search_context_size="high",
+            response_format=_VERIFY_JSON_SCHEMA,
         )
         raw1 = content1 if isinstance(content1, str) else content1.get("content", "")
         cleaned = _clean_json(raw1)
         data = json.loads(cleaned)
         if isinstance(data, dict):
             for e in data.get("emails", []):
-                addr = e.get("email", "")
-                if addr and "@" in addr:
+                addr = _clean_email(e.get("email", ""))
+                if addr:
                     all_emails.append({
-                        "email": addr.lower().strip(),
-                        "source": e.get("source", "Email DB"),
+                        "email": addr,
+                        "source": e.get("source", "LinkedIn/XING"),
                         "confidence": e.get("confidence", "medium"),
                     })
             pattern = data.get("company_email_pattern", "")
@@ -764,47 +1102,81 @@ Return JSON."""
             if notes:
                 all_notes.append(str(notes) if not isinstance(notes, list) else "; ".join(str(n) for n in notes))
     except Exception as ex:
-        all_notes.append(f"Pass 1 (email DBs): {ex}")
+        all_notes.append(f"Pass 1 (networks): {ex}")
 
-    # ─── Pass 2: Professional networks ────────────────────────────
-    system2 = """You are a research assistant finding email addresses from professional networks.
-Search LinkedIn profiles (contact info section), XING profiles, and company websites (impressum, about, team pages).
-Return JSON:
+    # ─── Pass 2: Company website + general web search ─────────────
+    system2 = """You are a research assistant finding email addresses from company websites and public web sources.
+Search company websites (impressum, contact, team pages), press releases, regulatory filings, conference speaker lists, published articles.
+Return a JSON object with:
 - emails: [{email, source, confidence}]
-- linkedin_data: any additional info found on their LinkedIn profile
-- notes: context about the search results"""
+- company_email_pattern: if discoverable
+- notes: context
+CRITICAL: Only return REAL, COMPLETE email addresses. No masked or guessed emails."""
+
+    # Build targeted search domains
+    search_domains = []
+    if company_domain:
+        search_domains.append(company_domain)
+    search_domains.extend(["bafin.de", "handelsregister.de"])
 
     user2 = f"""Find email address for {lead_name}, {lead_title} at {lead_company}.
 LinkedIn: {lead_linkedin}
-Search their LinkedIn profile contact section, XING profile, and the company website's impressum/team pages.
-Also search Google for "{lead_name}" "{lead_company}" email.
-Return JSON."""
+Company domain: {company_domain}
+Search the company website for contact/team/impressum pages.
+Search Google for "{lead_name}" "{lead_company}" email.
+Search press releases and conference speaker lists.
+Return JSON object."""
 
     try:
         content2 = await _call_api(
             system2, user2, api_key,
             max_tokens=3000,
             model=MODEL_FAST,
-            search_domain_filter=["linkedin.com", "xing.com"],
+            search_domain_filter=search_domains[:20] if search_domains else None,
             search_language_filter=["en", "de"],
             search_context_size="high",
+            response_format=_VERIFY_JSON_SCHEMA,
         )
         raw2 = content2 if isinstance(content2, str) else content2.get("content", "")
         cleaned2 = _clean_json(raw2)
         data2 = json.loads(cleaned2)
         if isinstance(data2, dict):
             for e in data2.get("emails", []):
-                addr = e.get("email", "")
-                if addr and "@" in addr:
-                    c = addr.lower().strip()
-                    if not any(ex["email"] == c for ex in all_emails):
-                        all_emails.append({
-                            "email": c,
-                            "source": e.get("source", "LinkedIn/XING"),
-                            "confidence": e.get("confidence", "medium"),
-                        })
+                addr = _clean_email(e.get("email", ""))
+                if addr and not any(ex["email"] == addr for ex in all_emails):
+                    all_emails.append({
+                        "email": addr,
+                        "source": e.get("source", "Company website"),
+                        "confidence": e.get("confidence", "medium"),
+                    })
+            if not company_domain and data2.get("company_domain"):
+                company_domain = data2["company_domain"]
     except Exception as ex:
-        all_notes.append(f"Pass 2 (networks): {ex}")
+        all_notes.append(f"Pass 2 (website/web): {ex}")
+
+    # ─── Derive pattern-based emails if we have a domain but no email yet ──
+    if company_domain and not all_emails:
+        pattern_str = " | ".join(n for n in all_notes if "Pattern:" in n)
+        derived = _derive_email_from_pattern(lead_name, company_domain, pattern_str)
+        for d_email in derived[:3]:
+            all_emails.append({
+                "email": d_email,
+                "source": "Pattern-derived",
+                "confidence": "low",  # Pattern-derived = always low until confirmed
+            })
+        if derived:
+            all_notes.append(f"Pattern-derived {len(derived)} candidates from {company_domain}")
+
+    # Also derive if we only have low-confidence emails
+    if company_domain and all(e.get("confidence") == "low" for e in all_emails):
+        derived = _derive_email_from_pattern(lead_name, company_domain)
+        for d_email in derived[:2]:
+            if not any(ex["email"] == d_email for ex in all_emails):
+                all_emails.append({
+                    "email": d_email,
+                    "source": "Pattern-derived",
+                    "confidence": "low",
+                })
 
     # ─── Pass 3: Cross-verification with REASONING model ──────────
     system3 = """You are an email verification specialist with deep analytical capabilities.
@@ -813,7 +1185,15 @@ Analyze:
 1. Does the email follow the company's naming pattern?
 2. Is the domain correct for this company?
 3. Cross-reference with multiple sources
-4. Check for common email patterns (firstname.lastname, f.lastname, first.last, etc.)
+4. Check for common patterns (firstname.lastname, f.lastname, first.last, etc.)
+5. Is this a real person at this company? (verify on LinkedIn/web)
+
+CRITICAL VERIFICATION RULES:
+- verified=true ONLY if you have STRONG evidence: email found on an official source (LinkedIn, company website, regulatory filing) OR confirmed by 2+ independent sources.
+- verified=false if: email is only pattern-derived, only from one medium-confidence source, or cannot be independently confirmed.
+- Do NOT mark pattern-guessed emails as verified.
+- If the person doesn't seem to work at this company, set verified=false.
+
 Return JSON: {best_email, verified (bool), confidence, verification_sources, alternative_emails, reasoning}"""
 
     candidate_str = ", ".join([e["email"] for e in all_emails[:8]]) or "none found"
@@ -825,9 +1205,11 @@ Company: {lead_company}
 LinkedIn: {lead_linkedin}
 Company domain: {company_domain}
 Candidate emails: {candidate_str}
-Known patterns: {pattern_str}
-Analyze all candidates. Which is most likely correct? Cross-verify across sources.
-Return JSON with best_email, verified, confidence, reasoning."""
+Known patterns/notes: {pattern_str}
+
+IMPORTANT: Only mark as verified=true if you have strong independent confirmation.
+A pattern-derived email without independent verification is NOT verified.
+Analyze all candidates carefully. Return JSON."""
 
     try:
         content3 = await _call_api(
@@ -836,53 +1218,78 @@ Return JSON with best_email, verified, confidence, reasoning."""
             model=MODEL_REASONING,
             search_context_size="high",
             search_language_filter=["en", "de"],
+            response_format=_CROSSVERIFY_JSON_SCHEMA,
         )
         raw3 = content3 if isinstance(content3, str) else content3.get("content", "")
         cleaned3 = _clean_json(raw3)
         data3 = json.loads(cleaned3)
         if isinstance(data3, dict):
-            best = data3.get("best_email", "")
-            if best and "@" in best:
+            best = _clean_email(data3.get("best_email", ""))
+            if best:
                 conf = data3.get("confidence", "medium")
                 verified = data3.get("verified", False)
+                # Only trust "high" confidence from reasoning model
+                effective_confidence = "high" if (verified and conf in ("high",)) else conf
                 all_emails.insert(0, {
-                    "email": best.lower().strip(),
+                    "email": best,
                     "source": "Cross-verification (Reasoning)",
-                    "confidence": "high" if verified else conf,
+                    "confidence": effective_confidence,
                 })
             for alt in data3.get("alternative_emails", []):
-                if alt and "@" in alt:
-                    c = alt.lower().strip()
-                    if not any(e["email"] == c for e in all_emails):
-                        all_emails.append({"email": c, "source": "Alternative", "confidence": "low"})
+                c = _clean_email(alt if isinstance(alt, str) else "")
+                if c and not any(e["email"] == c for e in all_emails):
+                    all_emails.append({"email": c, "source": "Alternative", "confidence": "low"})
             reasoning = data3.get("reasoning", "")
             if reasoning:
                 reasoning_str = str(reasoning) if not isinstance(reasoning, list) else "; ".join(str(r) for r in reasoning)
-                all_notes.append(f"Reasoning: {reasoning_str}")
+                all_notes.append(f"Reasoning: {reasoning_str[:300]}")
     except Exception as ex:
         all_notes.append(f"Pass 3 (reasoning): {ex}")
 
-    # ─── Pick best email ──────────────────────────────────────────
+    # ─── Pick best email with STRICT verification ────────────────
     email_counts: dict[str, int] = {}
     for e in all_emails:
         email_counts[e["email"]] = email_counts.get(e["email"], 0) + 1
 
+    # Count independent high/medium sources per email
+    email_source_quality: dict[str, dict] = {}
+    for e in all_emails:
+        addr = e["email"]
+        if addr not in email_source_quality:
+            email_source_quality[addr] = {"high": 0, "medium": 0, "low": 0}
+        conf = e.get("confidence", "low")
+        if conf in email_source_quality[addr]:
+            email_source_quality[addr][conf] += 1
+
     best_entry = (
         next((e for e in all_emails if e["confidence"] == "high"), None)
-        or next((e for e in all_emails if e["confidence"] == "medium" and email_counts.get(e["email"], 0) > 1), None)
+        or next((e for e in all_emails if e["confidence"] == "medium" and email_counts.get(e["email"], 0) >= 2), None)
         or next((e for e in all_emails if e["confidence"] == "medium"), None)
         or (all_emails[0] if all_emails else None)
     )
 
     final_email = best_entry["email"] if best_entry else lead_email
-    is_verified = bool(
-        best_entry
-        and (
-            best_entry["confidence"] == "high"
-            or email_counts.get(best_entry["email"], 0) > 1
-            or best_entry["confidence"] == "medium"
-        )
-    )
+
+    # STRICT verification logic:
+    # Verified ONLY if:
+    # 1) At least one HIGH confidence source, OR
+    # 2) Same email from 2+ independent sources (at least medium confidence), OR
+    # 3) Reasoning model explicitly confirmed with high confidence
+    # NOT verified if:
+    # - Only pattern-derived (low confidence)
+    # - Only one medium-confidence source
+    is_verified = False
+    if best_entry:
+        addr = best_entry["email"]
+        quality = email_source_quality.get(addr, {"high": 0, "medium": 0, "low": 0})
+        
+        if quality["high"] >= 1:
+            is_verified = True  # At least one high-confidence source
+        elif quality["medium"] >= 2:
+            is_verified = True  # Two+ medium-confidence independent sources
+        elif quality["medium"] >= 1 and email_counts.get(addr, 0) >= 2:
+            is_verified = True  # Medium confidence + found in multiple passes
+        # Single medium or any number of low = NOT verified
 
     notes_parts = []
     if best_entry:

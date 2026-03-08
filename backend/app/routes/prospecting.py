@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -27,6 +28,37 @@ MAX_CONCURRENT_VERIFY = 3
 
 # Global progress tracker for verify-all (simple in-memory)
 _verify_progress = {"running": False, "current": 0, "total": 0, "verified": 0, "errors": 0}
+
+
+def _normalize_company_name_for_dedup(name: str) -> str:
+    """Normalize company name for fuzzy duplicate detection.
+    E.g. 'Bayerische Landesbank (BayernLB)' and 'BayernLB' should match."""
+    n = name.lower().strip()
+    for suffix in [" ag", " se", " gmbh", " sa", " ltd", " plc", " & co.",
+                   " & co", " kg", " kgaa", " e.v.", " eg", " mbh", " inc.",
+                   " inc", " corp.", " corp", " n.v.", " s.a."]:
+        n = n.replace(suffix, "")
+    # Remove content in parentheses
+    n = re.sub(r"\([^)]*\)", "", n)
+    # Remove special characters
+    n = re.sub(r"[^a-z0-9\u00e4\u00f6\u00fc\u00df ]", "", n)
+    return " ".join(n.split()).strip()
+
+
+def _company_exists_fuzzy(db: Session, name: str) -> bool:
+    """Check if a company already exists in DB using fuzzy name matching."""
+    # First: exact match
+    if db_svc.company_exists(db, name):
+        return True
+    # Second: normalized match against all companies
+    norm = _normalize_company_name_for_dedup(name)
+    if not norm:
+        return False
+    all_companies = db_svc.load_companies(db)
+    for c in all_companies:
+        if _normalize_company_name_for_dedup(c.name) == norm:
+            return True
+    return False
 
 
 
@@ -317,7 +349,7 @@ async def find_companies(
                 size_hint = ",".join(sizes) if sizes else ""
                 companies_raw = await pplx.find_companies(ind.value, reg.countries, api_key, size_filter=size_hint)
                 for c in companies_raw:
-                    if db_svc.company_exists(db, c["name"]):
+                    if _company_exists_fuzzy(db, c["name"]):
                         continue
                     # Filter by size if specified
                     if sizes:
@@ -435,40 +467,56 @@ async def _verify_single_lead(lead, api_key: str, db: Session) -> dict:
     pplx_verified = pplx_result.get("verified", False)
     pplx_notes = pplx_result.get("notes", "")
 
-    # Step 2: Technical SMTP/MX verification (best-effort)
-    tech_result = {"risk_level": "unknown", "notes": "Keine E-Mail für technische Prüfung"}
+    # Step 2: Email pattern validation (catch hallucinated emails early)
+    pattern_result = None
+    if lead.email and "@" in lead.email:
+        pattern_result = email_verify.validate_email_pattern(lead.email, lead.name)
+        if not pattern_result.get("plausible", True):
+            logger.info(f"[Verify] Email {lead.email} failed pattern check: {pattern_result.get('reason')}")
+            # Clear implausible emails (masked, too short, etc.)
+            lead.email = ""
+            found_email = ""
+
+    # Step 3: Technical SMTP/MX verification (best-effort)
+    tech_result = {"risk_level": "unknown", "notes": "Keine E-Mail f\u00fcr technische Pr\u00fcfung"}
     if lead.email and "@" in lead.email:
         try:
             tech_result = await email_verify.verify_email_technical(lead.email)
         except Exception as ex:
             logger.warning(f"Technical email verification failed for {lead.email}: {ex}")
-            tech_result = {"risk_level": "unknown", "notes": f"Technische Prüfung fehlgeschlagen: {str(ex)[:100]}"}
+            tech_result = {"risk_level": "unknown", "notes": f"Technische Pr\u00fcfung fehlgeschlagen: {str(ex)[:100]}"}
 
     # Combine results
     risk = tech_result.get("risk_level", "unknown")
     smtp_ok = tech_result.get("smtp_exists", None)
     is_catch_all = tech_result.get("is_catch_all", False)
 
-    # Determine final verification status
-    # Verified if:
-    # - Perplexity found and confirmed an email (pplx_verified=True)
-    #   AND risk is low or medium (MX exists, syntax OK, not disposable)
+    # Determine final verification status (STRICT)
+    # Verified ONLY if:
+    # - Perplexity cross-verification marked as verified (multi-source confirmed)
+    #   AND technical checks don't explicitly reject (risk != "invalid")
     #   AND SMTP didn't explicitly reject (smtp_ok is not False)
-    # OR:
-    # - Perplexity confirmed with high confidence even if risk is "unknown"
-    #   (because SMTP may be unavailable in cloud)
+    # The Perplexity verify_email function itself now applies strict rules:
+    #   - Requires high confidence OR 2+ independent medium-confidence sources
+    #   - Pattern-derived emails without confirmation are NOT verified
     is_verified = (
         pplx_verified
         and risk in ("low", "medium")
         and smtp_ok is not False  # Not explicitly rejected by server
     ) or (
-        # Fallback: Perplexity high confidence + email has valid syntax + not disposable
+        # Fallback: Perplexity verified + valid syntax + not disposable
+        # (SMTP may be unavailable in cloud, risk "unknown")
         pplx_verified
         and risk == "unknown"
         and lead.email
         and "@" in lead.email
         and not tech_result.get("is_disposable", False)
     )
+    # Additional safety: if the email looks suspiciously pattern-derived
+    # and verification notes mention "Pattern-derived", downgrade
+    if is_verified and pplx_notes and "Pattern-derived" in str(pplx_notes) and "high" not in str(pplx_notes).lower():
+        is_verified = False
+        logger.info(f"[Verify] Downgrading {lead.name}: pattern-derived without high confidence")
 
     # Update lead fields — NEVER change status to 'Contacted' automatically
     lead.email_verified = is_verified
@@ -486,6 +534,10 @@ async def _verify_single_lead(lead, api_key: str, db: Session) -> dict:
     notes_parts.append(f"Risiko: {risk}")
     if is_catch_all:
         notes_parts.append("Catch-All-Domain")
+    if pattern_result and pattern_result.get("pattern_type") and pattern_result["pattern_type"] != "unknown":
+        notes_parts.append(f"Pattern: {pattern_result['pattern_type']}")
+    if pattern_result and pattern_result.get("reason"):
+        notes_parts.append(f"Pattern-Check: {pattern_result['reason'][:100]}")
     lead.verification_notes = " | ".join(str(p) for p in notes_parts)[:500]
 
     if is_verified and lead.status == "Identified":
