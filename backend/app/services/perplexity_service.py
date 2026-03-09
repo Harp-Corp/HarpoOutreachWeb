@@ -74,15 +74,26 @@ def _strip_markdown(text: str) -> str:
 
 def _is_meta_response(text: str) -> bool:
     """Detect LLM meta-responses that are not actual post content.
-    E.g. 'I appreciate...', 'I cannot...', 'I'm unable...' etc."""
+    E.g. 'I appreciate...', 'I cannot...', JSON error objects, etc."""
+    cleaned = text.strip()
+    # Strip markdown code fences
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        cleaned = cleaned.strip()
+    # Check for JSON error objects
+    if cleaned.startswith("{") and '"error"' in cleaned[:200].lower():
+        return True
+    if '"cannot complete"' in cleaned[:300].lower() or '"conflicting instructions"' in cleaned[:300].lower():
+        return True
     prefixes = (
         "i appreciate", "i cannot", "i'm unable", "i am unable",
         "i'm sorry", "i am sorry", "sorry,", "unfortunately,",
         "i can't", "i don't", "i do not", "as an ai",
         "i understand", "thank you for", "the core issue",
         "the preamble", "this task", "i need to clarify",
+        "cannot complete", "cannot responsibly",
     )
-    first_line = text.strip().split("\n")[0].lower()[:100]
+    first_line = cleaned.split("\n")[0].lower()[:150]
     return any(first_line.startswith(p) for p in prefixes)
 
 
@@ -2099,6 +2110,13 @@ Return JSON:
         raw3 = resp3 if isinstance(resp3, str) else resp3.get("content", "")
         parsed3 = json.loads(_clean_json(raw3))
         entities_result = parsed3.get("entities", [])
+        # Force-mark our own entities (Harpocrates/COMPLY) as existing —
+        # they won't appear in web search results but are real.
+        _OWN = {"harpocrates", "comply", "comply.reg", "harpocrates solutions", "harpocrates solutions gmbh"}
+        for ent in entities_result:
+            if (ent.get("name", "") or "").lower().strip() in _OWN:
+                ent["exists"] = True
+                ent["details"] = "Harpocrates' own product/company — verified."
         logger.info(f"[CrossCheck] Pass 3: {len(entities_result)} entities checked")
     except Exception as e:
         logger.warning(f"[CrossCheck] Pass 3 failed: {e}")

@@ -353,8 +353,14 @@ async def generate_social_post(
                         issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht erreichbar"})
                     elif not u.get("relevant"):
                         issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht relevant"})
+                # Filter entity issues: Harpocrates/COMPLY are OUR OWN entities —
+                # the cross-check can’t find them via web search but they are real.
+                OWN_ENTITIES = {"harpocrates", "comply", "comply.reg", "harpocrates solutions", "harpocrates solutions gmbh"}
                 for e in verification.get("entities", []):
                     if not e.get("exists"):
+                        ename = (e.get("name", "") or "").lower().strip()
+                        if ename in OWN_ENTITIES:
+                            continue  # skip — these are our own products
                         issues.append({"type": "missing_entity", "detail": f"{e.get('name', '')} — {e.get('details', '')}"})
 
                 if not issues:
@@ -478,9 +484,13 @@ async def regenerate_social_post(post_id: UUID, db: Session = Depends(get_db)):
                     issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht erreichbar"})
                 elif not u.get("relevant"):
                     issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht relevant f\u00fcr das Thema"})
-            # Missing entities
+            # Missing entities (skip our own: Harpocrates/COMPLY)
+            OWN_ENTITIES = {"harpocrates", "comply", "comply.reg", "harpocrates solutions", "harpocrates solutions gmbh"}
             for e in verification.get("entities", []):
                 if not e.get("exists"):
+                    ename = (e.get("name", "") or "").lower().strip()
+                    if ename in OWN_ENTITIES:
+                        continue
                     issues.append({"type": "missing_entity", "detail": f"{e.get('name', '')} — {e.get('details', '')}"})
     except Exception as ex:
         logger.warning(f"Could not parse verification JSON: {ex}")
