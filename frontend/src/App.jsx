@@ -1717,19 +1717,12 @@ function App() {
                       <span className="badge badge-blue">LinkedIn</span>
                       {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
                       {/* Verification badge */}
-                      {p.verification_status === 'verified' && (() => {
+                      {(p.verification_status === 'verified' || p.verification_status === 'issues_found') && (() => {
                         const s = Math.round((p.verification_score||0)*100)
                         const noFalse = !p.verification?.claims?.some(c=>c.verdict==='false')
                         const noDeadUrls = !p.verification?.urls_checked?.some(u=>!u.reachable)
                         if (s >= 90 && noFalse && noDeadUrls) return <span className="badge badge-green" style={{fontSize:'0.55rem'}}>✅ Postbar</span>
-                        if (s >= 70 && noFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⚠️ Postbar mit Korrekturen</span>
-                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>❌ Nicht postbar</span>
-                      })()}
-                      {p.verification_status === 'issues_found' && (() => {
-                        const s = Math.round((p.verification_score||0)*100)
-                        const hasFalse = p.verification?.claims?.some(c=>c.verdict==='false')
-                        if (s >= 70 && !hasFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⚠️ Postbar mit Korrekturen</span>
-                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>❌ Nicht postbar</span>
+                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>❌ Nicht postbar ({s}%)</span>
                       })()}
                       {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⏳ Prüfung läuft...</span>}
                       {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungeprüft</span>}
@@ -1766,8 +1759,6 @@ function App() {
                     let verdict, verdictColor, verdictBg, verdictBorder, verdictIcon
                     if (score >= 90 && !hasFalse && !hasUnreachable) {
                       verdict = 'Postbar'; verdictColor = '#166534'; verdictBg = '#f0fdf4'; verdictBorder = '#bbf7d0'; verdictIcon = '\u2705'
-                    } else if (score >= 70 && !hasFalse) {
-                      verdict = 'Postbar mit Korrekturen'; verdictColor = '#92400e'; verdictBg = '#fffbeb'; verdictBorder = '#fde68a'; verdictIcon = '\u26a0\ufe0f'
                     } else {
                       verdict = 'Nicht postbar'; verdictColor = '#991b1b'; verdictBg = '#fef2f2'; verdictBorder = '#fecaca'; verdictIcon = '\u274c'
                     }

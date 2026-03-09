@@ -294,22 +294,93 @@ async def generate_social_post(
     obj = db_svc.save_social_post(db, post_data)
 
     # Auto-run cross-check verification after generation
+    # If the post is "nicht postbar", auto-regenerate up to MAX_AUTO_REGEN times
+    MAX_AUTO_REGEN = 2
     try:
         from ..models.db import SocialPostDB
         post_obj = db.query(SocialPostDB).filter(SocialPostDB.id == post_data["id"]).first()
         if post_obj:
-            post_obj.verification_status = "checking"
-            db.commit()
-            verification = await pplx.cross_check_post(content_with_ts, api_key)
-            post_obj.verification_status = verification["status"]
-            post_obj.verification_score = verification["score"]
-            post_obj.verification_json = json.dumps(verification, ensure_ascii=False)
-            db.commit()
+            for regen_attempt in range(MAX_AUTO_REGEN + 1):  # 0 = initial check, 1-2 = regen attempts
+                post_obj.verification_status = "checking"
+                db.commit()
+                current_content = post_obj.content
+                verification = await pplx.cross_check_post(current_content, api_key)
+                post_obj.verification_status = verification["status"]
+                post_obj.verification_score = verification["score"]
+                post_obj.verification_json = json.dumps(verification, ensure_ascii=False)
+                db.commit()
+
+                score = verification.get("score", 0)
+                has_false = any(
+                    c.get("verdict", "").lower() == "false"
+                    for c in verification.get("claims", [])
+                )
+                has_dead_urls = any(
+                    not u.get("reachable")
+                    for u in verification.get("urls_checked", [])
+                )
+                # "Postbar" = score >= 0.9 AND no false claims AND no dead URLs
+                # Everything below 0.9 is "nicht postbar" and must be auto-fixed
+                is_postable = (score >= 0.9 and not has_false and not has_dead_urls)
+
+                if is_postable or regen_attempt >= MAX_AUTO_REGEN:
+                    if is_postable:
+                        logger.info(f"Auto cross-check (attempt {regen_attempt}): score={score}, POSTABLE")
+                    else:
+                        logger.warning(f"Auto cross-check: score={score} after {regen_attempt} regen attempts, giving up")
+                    break
+
+                # Not postable — extract issues and auto-regenerate
+                logger.info(f"Auto cross-check (attempt {regen_attempt}): score={score}, NOT POSTABLE — auto-regenerating...")
+                issues = []
+                for c in verification.get("claims", []):
+                    if c.get("verdict") == "false":
+                        issues.append({"type": "false_claim", "detail": f"{c.get('claim', '')} — {c.get('details', '')}"})
+                    elif c.get("verdict") == "inaccurate":
+                        issues.append({"type": "inaccurate_claim", "detail": f"{c.get('claim', '')} — {c.get('details', '')}"})
+                    elif c.get("verdict") == "unverifiable":
+                        issues.append({"type": "unverifiable_claim", "detail": c.get("claim", "")})
+                for u in verification.get("urls_checked", []):
+                    if not u.get("reachable"):
+                        issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht erreichbar"})
+                    elif not u.get("relevant"):
+                        issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht relevant"})
+                for e in verification.get("entities", []):
+                    if not e.get("exists"):
+                        issues.append({"type": "missing_entity", "detail": f"{e.get('name', '')} — {e.get('details', '')}"})
+
+                if not issues:
+                    logger.info("No specific issues extracted despite low score, skipping regen")
+                    break
+
+                # Regenerate
+                regen_result = await pplx.regenerate_social_post(
+                    original_content=current_content,
+                    verification_issues=issues,
+                    platform=post_obj.platform,
+                    api_key=api_key,
+                )
+                # Add timestamp
+                timestamp_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+                new_content = regen_result["content"]
+                if "\U0001f517 www.harpocrates-corp.com" in new_content:
+                    new_content = new_content.replace(
+                        "\U0001f517 www.harpocrates-corp.com",
+                        f"\n\n\U0001f4c5 {timestamp_str}\n\n\U0001f517 www.harpocrates-corp.com",
+                    )
+                else:
+                    new_content += f"\n\n\U0001f4c5 {timestamp_str}"
+                post_obj.content = new_content
+                post_obj.hashtags_json = json.dumps(regen_result["hashtags"])
+                post_obj.is_copied = False
+                db.commit()
+                logger.info(f"Auto-regenerated (attempt {regen_attempt + 1}/{MAX_AUTO_REGEN})")
+                # Loop continues → next iteration will cross-check the regenerated content
+
             db.refresh(post_obj)
             obj = post_obj
-            logger.info(f"Auto cross-check: score={verification['score']}, status={verification['status']}")
     except Exception as e:
-        logger.warning(f"Auto cross-check failed (non-blocking): {e}")
+        logger.warning(f"Auto cross-check/regen failed (non-blocking): {e}")
 
     return {"success": True, "data": db_svc.social_post_to_response(obj)}
 
