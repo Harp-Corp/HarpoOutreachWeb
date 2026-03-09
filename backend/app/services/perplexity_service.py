@@ -56,6 +56,22 @@ def ensure_footer(content: str) -> str:
     return clean + COMPANY_FOOTER
 
 
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting from text for LinkedIn plain-text output.
+    Strips **bold**, *italic*, [text](url) links, and markdown lists."""
+    import re as _re
+    result = text
+    # Remove markdown links [text](url) -> text (url)
+    result = _re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', result)
+    # Remove **bold** markers
+    result = _re.sub(r'\*\*(.+?)\*\*', r'\1', result)
+    # Remove *italic* markers (but not bullet points like * item)
+    result = _re.sub(r'(?<!\n)\*(?!\s)(.+?)\*', r'\1', result)
+    # Remove markdown list markers at line start (- item -> • item)
+    result = _re.sub(r'^\s*[-*]\s+', '• ', result, flags=_re.MULTILINE)
+    return result
+
+
 def strip_trailing_hashtags(content: str) -> str:
     lines = content.split("\n")
     result: list[str] = []
@@ -252,18 +268,20 @@ def _resolve_citations(text: str, citations: list[str]) -> str:
         except Exception:
             return "Source"
 
-    # Replace [N] markers with linked source
+    # Replace [N] markers with plain-text source references
+    # Output: (Source: ECB) — not markdown links, not bracketed URLs
     def replacer(match: re.Match) -> str:
         nums_str = match.group(1)  # e.g. "1" or "1, 2"
         nums = [int(n.strip()) for n in nums_str.split(",") if n.strip().isdigit()]
-        links = []
+        labels = []
         for n in nums:
             idx = n - 1  # citations are 0-indexed
             if 0 <= idx < len(citations):
-                url = citations[idx]
-                label = _domain_label(url)
-                links.append(f"{label} ({url})")
-        return " [" + ", ".join(links) + "]" if links else match.group(0)
+                label = _domain_label(citations[idx])
+                labels.append(label)
+        if labels:
+            return " (" + ", ".join(labels) + ")"
+        return match.group(0)
 
     resolved = re.sub(r"\[(\d+(?:,\s*\d+)*)\]", replacer, text)
     return resolved
@@ -1603,50 +1621,63 @@ async def generate_social_post(
     existing_posts_preview: list[str],
     api_key: str,
 ) -> dict:
-    """Generate social posts with real citations from regulatory sources."""
+    """Generate social posts with real citations from regulatory sources.
+    
+    Key design decisions:
+    - Output is PLAIN TEXT for LinkedIn (no markdown, no [text](url) links)
+    - Sources come ONLY from Perplexity API citations (not LLM-generated URLs)
+    - COMPLY is referenced as Harpocrates' own product (not a third-party tool)
+    - All URLs in the post are plain text (LinkedIn renders them as clickable)
+    """
     dupe_context = ""
     if existing_posts_preview:
         titles = "\n- ".join(existing_posts_preview[:10])
         dupe_context = f"\n\nALREADY POSTED (DO NOT REPEAT):\n- {titles}"
 
-    system = f"""You are a social media expert for Harpocrates Corp and comply.reg.
-comply.reg: RegTech SaaS for automated compliance monitoring, regulatory change management, risk assessment.
+    system = f"""You are a social media expert writing LinkedIn posts for Harpocrates Solutions GmbH.
 
-MANDATORY RULES:
-1. LANGUAGE: Write ENTIRELY in English with CORRECT capitalisation (proper nouns, sentence beginnings, acronyms). This is an official corporate post — do NOT write in all-lowercase.
-2. GEOGRAPHIC FOCUS: ALL content MUST focus on EUROPE (EU, EEA, UK, Switzerland). Do NOT reference US, SEC, or non-European regulators unless comparing to EU rules.
-3. CURRENCY: ALL monetary values MUST be in EUR (€). Convert any USD or GBP figures to EUR.
-4. FACTS: Every post MUST have 1-2 concrete numbers/statistics with explicit source citation in the text (e.g. "According to EBA's 2025 Annual Report", "Source: European Commission, March 2026"). Raw numbers without sources are NOT acceptable.
-5. SOURCES: Include the source name AND publication date for every statistic or claim. Use Perplexity citations where available.
-6. NO HALLUCINATIONS: Only verifiable facts from real European regulatory bodies, institutions, or reputable publications.
-7. COMPLY.REG RELEVANCE: Address problems comply.reg solves.
-8. NO DUPLICATE topic/hook. Study the ALREADY POSTED list carefully — use DIFFERENT angles, statistics, regulations, and hooks.
-9. AUDIENCE BUILDING: If previous posts exist, build on them. Reference themes your audience engaged with. Create continuity and series potential (e.g. "Part 2 of our DORA series"). Avoid repeating the same regulation focus.
-10. FOOTER: Added automatically — do NOT include any footer.
-11. VALUE: Genuine insight for European compliance professionals.
-12. TIMELINESS: Reference recent EU regulatory developments, ECB/EBA/ESMA/BaFin publications.
-13. EUROPEAN REGULATIONS ONLY: Focus on DORA, NIS2, GDPR, MiCA, CSRD, EU AI Act, PSD2/PSD3, AML6/AMLD, EBA Guidelines, Lieferkettengesetz/CSDDD.
-14. CAPITALISATION: Use STANDARD English capitalisation. Capitalise: first word of each sentence, proper nouns (European Commission, BaFin, DORA), acronyms, titles. Do NOT write everything in lowercase.
-Return JSON: {{"content": "...", "hashtags": [...], "sources": ["Source Name (URL)"]}}"""
+ABOUT HARPOCRATES:
+Harpocrates Solutions is a Berlin-based RegTech company. Their product COMPLY is a SaaS platform for automated compliance monitoring, regulatory change management, and risk assessment. COMPLY.Reg is the core module for regulatory obligation tracking. This is HARPOCRATES' OWN PRODUCT — reference it as "our COMPLY platform" or "COMPLY.Reg", never as a third-party tool.
+
+CRITICAL FORMAT RULES (LinkedIn is PLAIN TEXT, not Markdown):
+1. NO MARKDOWN whatsoever. No **bold**, no *italic*, no [text](url) links.
+2. URLs must be written as plain text: https://example.com (LinkedIn auto-links them)
+3. Use CAPS or UPPER CASE for emphasis instead of markdown bold.
+4. Use bullet points with • or — characters, not markdown lists.
+5. Line breaks for readability. Short paragraphs (2-3 sentences max).
+
+CONTENT RULES:
+1. LANGUAGE: English with correct capitalisation.
+2. GEOGRAPHIC FOCUS: Europe only (EU, EEA, UK, Switzerland). No US/SEC references.
+3. CURRENCY: All amounts in EUR (€).
+4. FACTS: 1-2 concrete numbers with INLINE source attribution (e.g. "According to ESMA's March 2026 report"). No unsourced claims.
+5. NO HALLUCINATIONS: Only verifiable facts. Do NOT invent URLs, reports, or statistics.
+6. DO NOT generate source URLs yourself. Leave [1], [2] citation markers — they will be resolved to real URLs from search results.
+7. COMPLY MENTION: Reference COMPLY naturally as "our platform" or "At Harpocrates, our COMPLY.Reg module...". It is YOUR product.
+8. NO DUPLICATE topics — check the ALREADY POSTED list.
+9. FOOTER: Do NOT include any footer, website, email, or timestamp. These are added automatically.
+10. NO HASHTAGS in the content body. Return them separately in the JSON.
+
+Return JSON: {{"content": "...", "hashtags": [...]}}"""
 
     industry_context = ", ".join(industries) if industries else "Financial Services, RegTech, Compliance"
 
-    user = f"""Write a LinkedIn post for Harpocrates Corp / comply.reg.
+    user = f"""Write a LinkedIn post for Harpocrates Solutions.
 Topic: {topic} - {topic_prefix} {industry_context}
 
 REQUIREMENTS:
-- Write in English with CORRECT capitalisation (this is a professional corporate post, NOT casual text)
-- ALL content focused on EUROPE (EU, EEA, UK, Switzerland) — no US/SEC references
-- ALL monetary amounts in EUR (€)
-- Hook in line 1 (number or provocative thesis)
-- At least 1-2 concrete numbers/statistics, each with EXPLICIT SOURCE ATTRIBUTION in the text (e.g. "According to [Source], ...")
-- Reference DORA, NIS2, GDPR, MiCA, EU AI Act, CSRD, PSD3, AMLD, EBA Guidelines or current EU regulations
-- Include the specific source name and date for each claim
-- Question or CTA at end
-- Mention comply.reg naturally
-- 150-250 words, line breaks{dupe_context}
-Hashtags: 5-7 from: #DORA #NIS2 #GDPR #RegTech #Compliance #FinTech #RegulatoryCompliance #comply #RiskManagement #AML #BaFin #EBA #ESMA #ECB #CSRD #EUAIAct
-Return ONLY valid JSON with content, hashtags, AND sources array."""
+- PLAIN TEXT only (no markdown, no bold syntax, no [link](url) format)
+- Europe-focused (EU, EEA, UK, Switzerland)
+- All amounts in EUR (€)
+- Strong hook in line 1
+- 1-2 verified statistics with source attribution in the text
+- Reference relevant EU regulation (DORA, NIS2, GDPR, MiCA, EU AI Act, CSRD, PSD3, AMLD, EMIR, EBA Guidelines)
+- Mention COMPLY or COMPLY.Reg as Harpocrates' own solution (not a third-party recommendation)
+- Closing question or CTA
+- 150-250 words
+- Leave [1], [2] citation markers — do NOT write URLs yourself{dupe_context}
+Hashtags: 5-7 from: #DORA #NIS2 #GDPR #RegTech #Compliance #FinTech #RegulatoryCompliance #COMPLY #RiskManagement #AML #BaFin #EBA #ESMA #ECB #CSRD #EUAIAct #Harpocrates
+Return ONLY valid JSON with content and hashtags."""
 
     content = await _call_api(
         system, user, api_key,
@@ -1668,34 +1699,34 @@ Return ONLY valid JSON with content, hashtags, AND sources array."""
         data = json.loads(cleaned)
         raw_content = data.get("content", raw)
         hashtags = data.get("hashtags", [])
-        post_sources = data.get("sources", [])
         hashtag_line = " ".join(
             h if h.startswith("#") else f"#{h}" for h in hashtags
         )
 
-        # Resolve [1], [2] citation markers to actual URLs
+        # Resolve [1], [2] citation markers to actual URLs from Perplexity
         full = _resolve_citations(raw_content, citations)
         full = strip_trailing_hashtags(full)
 
-        # Build sources section with clickable links
-        source_urls = []
-        if citations:
-            source_urls = citations[:8]
-        # Deduplicate and format
-        seen_domains = set()
+        # Strip any markdown formatting that slipped through
+        full = _strip_markdown(full)
+
+        # Build sources section ONLY from real Perplexity citations
+        # (never from LLM-generated URLs which are often hallucinated)
         source_entries = []
-        for url in source_urls:
-            try:
-                from urllib.parse import urlparse
-                domain = urlparse(url).hostname or ""
-                domain = domain.replace("www.", "")
-            except Exception:
-                domain = url
-            if domain not in seen_domains:
-                seen_domains.add(domain)
-                source_entries.append(url)
+        if citations:
+            seen_domains = set()
+            for url in citations[:8]:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).hostname or ""
+                    domain = domain.replace("www.", "")
+                except Exception:
+                    domain = url
+                if domain not in seen_domains:
+                    seen_domains.add(domain)
+                    source_entries.append(url)
         if source_entries:
-            full += "\n\nQuellen:\n" + "\n".join(f"\u2022 {url}" for url in source_entries[:5])
+            full += "\n\nQuellen:\n" + "\n".join(f"• {url}" for url in source_entries[:5])
 
         if hashtag_line:
             full += "\n\n" + hashtag_line
@@ -1704,8 +1735,9 @@ Return ONLY valid JSON with content, hashtags, AND sources array."""
     except json.JSONDecodeError:
         # Fallback: resolve citations and append
         fallback = _resolve_citations(raw, citations)
+        fallback = _strip_markdown(fallback)
         if citations:
-            fallback += "\n\nQuellen:\n" + "\n".join(f"\u2022 {url}" for url in citations[:5])
+            fallback += "\n\nQuellen:\n" + "\n".join(f"• {url}" for url in citations[:5])
         return {"content": ensure_footer(fallback), "hashtags": []}
 
 
