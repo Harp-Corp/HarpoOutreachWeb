@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # Sender defaults
     sender_name: str = "Martin Foerster"
     sender_email: str = "mf@harpocrates-corp.com"
+    reply_to_email: str = "martin.foerster@gmail.com"  # Reply-To: working inbox for responses
 
     # Google Sheets
     google_spreadsheet_id: str = ""

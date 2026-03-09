@@ -17,10 +17,11 @@ logger = logging.getLogger("harpo.gmail")
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
-def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
+def _build_mime_email(to: str, from_addr: str, subject: str, body: str, reply_to: str | None = None) -> str:
     """Build a multipart/alternative MIME email with plain text + HTML (professional signature).
     Uses Python's email library for correct RFC 2045 encoding (proper base64 line wrapping).
-    Includes X-Harpo-Campaign header for campaign tracking."""
+    Includes X-Harpo-Campaign header for campaign tracking.
+    reply_to: if set, adds Reply-To header so replies go to a working inbox."""
 
     # Unsubscribe footer
     unsub_url = f"mailto:unsubscribe@harpocrates-corp.com?subject=Unsubscribe&body=Please%20remove%20{to}"
@@ -72,6 +73,10 @@ def _build_mime_email(to: str, from_addr: str, subject: str, body: str) -> str:
     msg["From"] = f"Martin Foerster <{from_addr}>"
     msg["To"] = to
     msg["Subject"] = subject
+    # Reply-To: ensure replies go to a working inbox (harpocrates-corp.com mail server
+    # may not be reachable, so replies to from_addr would bounce)
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg["X-Harpo-Campaign"] = "comply-reg"
     msg["List-Unsubscribe"] = f"<mailto:unsubscribe@harpocrates-corp.com?subject=Unsubscribe>"
     msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
@@ -116,9 +121,10 @@ async def send_email(
     subject: str,
     body: str,
     access_token: str,
+    reply_to: str | None = None,
 ) -> dict:
     """Send an email via Gmail API. Returns dict with 'msg_id' and 'thread_id'."""
-    raw_mime = _build_mime_email(to, from_addr, subject, body)
+    raw_mime = _build_mime_email(to, from_addr, subject, body, reply_to=reply_to)
     # URL-safe base64
     encoded = (
         base64.urlsafe_b64encode(raw_mime.encode("utf-8"))

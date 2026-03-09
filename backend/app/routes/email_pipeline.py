@@ -16,6 +16,7 @@ from ..models.schemas import OutboundEmail
 from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
 from ..services import google_auth_service as gauth
+from ..config import settings
 from ..services import perplexity_service as pplx
 
 router = APIRouter(prefix="/email", tags=["Email Pipeline"])
@@ -524,11 +525,13 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
     _logger.info(f"Sending email to {lead.email} (lead={lead_id}, subject='{draft.get('subject', '')[:50]}')")
 
+    reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+
     async def _try_send(token):
         return await gmail.send_email(
             to=lead.email, from_addr=sender,
             subject=draft["subject"], body=draft["body"],
-            access_token=token,
+            access_token=token, reply_to=reply_to,
         )
 
     try:
@@ -604,6 +607,7 @@ async def send_all_approved(db: Session = Depends(get_db)):
             continue
 
         draft = json.loads(lead.drafted_email_json)
+        reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
         _logger.info(f"[send-all] Sending to {lead.email} ({lead.name})")
         try:
             send_result = await gmail.send_email(
@@ -612,6 +616,7 @@ async def send_all_approved(db: Session = Depends(get_db)):
                 subject=draft["subject"],
                 body=draft["body"],
                 access_token=access_token,
+                reply_to=reply_to,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
@@ -634,7 +639,7 @@ async def send_all_approved(db: Session = Depends(get_db)):
                 send_result = await gmail.send_email(
                     to=lead.email, from_addr=sender,
                     subject=draft["subject"], body=draft["body"],
-                    access_token=access_token,
+                    access_token=access_token, reply_to=reply_to,
                 )
                 lead.status = "Email Sent"
                 lead.date_email_sent = datetime.utcnow()
@@ -725,6 +730,7 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
             skipped += 1
             continue
 
+        reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
         _logger.info(f"Sending to {lead.email} ({lead.name} @ {lead.company}), subject='{draft.get('subject', '')[:60]}'")
 
         try:
@@ -734,6 +740,7 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
                 subject=draft["subject"],
                 body=draft["body"],
                 access_token=access_token,
+                reply_to=reply_to,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
@@ -759,7 +766,7 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
                 send_result = await gmail.send_email(
                     to=lead.email, from_addr=sender,
                     subject=draft["subject"], body=draft["body"],
-                    access_token=access_token,
+                    access_token=access_token, reply_to=reply_to,
                 )
                 lead.status = "Email Sent"
                 lead.date_email_sent = datetime.utcnow()
