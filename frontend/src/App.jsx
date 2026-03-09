@@ -511,11 +511,14 @@ function App() {
   const renderPostContent = (text) => {
     if (!text) return ''
     const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    // Render markdown bold **text** and *text*
-    let rendered = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    rendered = rendered.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+    // Strip markdown bold **text** and *italic*
+    let rendered = escaped.replace(/\*\*(.+?)\*\*/g, '$1')
+    rendered = rendered.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '$1')
+    // Convert markdown links [text](url) to just the URL (plain text for LinkedIn)
+    rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$2')
+    // Auto-link plain URLs
     const withLinks = rendered.replace(
-      /(https?:\/\/[^\s)<>]+)/g,
+      /(https?:\/\/[^\s)<>&]+)/g,
       '<a href="$1" target="_blank" rel="noopener noreferrer" class="post-link">$1</a>'
     )
     return withLinks.replace(/\n/g, '<br/>')
@@ -1705,9 +1708,21 @@ function App() {
                       <span className="badge badge-blue">LinkedIn</span>
                       {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
                       {/* Verification badge */}
-                      {p.verification_status === 'verified' && <span className="badge badge-green" style={{fontSize:'0.55rem'}} title={`Score: ${Math.round((p.verification_score||0)*100)}%`}>✓ Verifiziert ({Math.round((p.verification_score||0)*100)}%)</span>}
-                      {p.verification_status === 'issues_found' && <span className="badge badge-red" style={{fontSize:'0.55rem',cursor:'pointer'}} title="Klicken f\u00fcr Details" onClick={() => setVerifyExpanded(prev => ({...prev, [p.id]: !prev[p.id]}))}>⚠ Probleme ({Math.round((p.verification_score||0)*100)}%)</span>}
-                      {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⏳ Pr\u00fcfung l\u00e4uft...</span>}
+                      {p.verification_status === 'verified' && (() => {
+                        const s = Math.round((p.verification_score||0)*100)
+                        const noFalse = !p.verification?.claims?.some(c=>c.verdict==='false')
+                        const noDeadUrls = !p.verification?.urls_checked?.some(u=>!u.reachable)
+                        if (s >= 90 && noFalse && noDeadUrls) return <span className="badge badge-green" style={{fontSize:'0.55rem'}}>\u2705 Postbar</span>
+                        if (s >= 70 && noFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>\u26a0\ufe0f Postbar mit Korrekturen</span>
+                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>\u274c Nicht postbar</span>
+                      })()}
+                      {p.verification_status === 'issues_found' && (() => {
+                        const s = Math.round((p.verification_score||0)*100)
+                        const hasFalse = p.verification?.claims?.some(c=>c.verdict==='false')
+                        if (s >= 70 && !hasFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>\u26a0\ufe0f Postbar mit Korrekturen</span>
+                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>\u274c Nicht postbar</span>
+                      })()}
+                      {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>\u23f3 Pr\u00fcfung l\u00e4uft...</span>}
                       {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungepr\u00fcft</span>}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
@@ -1724,70 +1739,113 @@ function App() {
                       {!p.is_published && !p.publish_pending && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>\u00d7</button>}
                     </div>
                   </div>
-                  {/* Verification details (expandable) */}
-                  {(verifyExpanded[p.id] || p.verification_status === 'issues_found') && p.verification && (
-                    <div style={{padding:'0.75rem',margin:'0.5rem 0',background:p.verification_status === 'verified' ? '#f0fdf4' : '#fef2f2',borderRadius:'0.5rem',border:`1px solid ${p.verification_status === 'verified' ? '#bbf7d0' : '#fecaca'}`,fontSize:'0.75rem'}}>
-                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
-                        <strong>Cross-Check Ergebnis</strong>
-                        <span style={{fontSize:'0.65rem',color:'#6b7280'}}>{p.verification.summary}</span>
-                      </div>
-                      {/* Claims */}
-                      {p.verification.claims && p.verification.claims.length > 0 && (
-                        <div style={{marginBottom:'0.5rem'}}>
-                          <div style={{fontWeight:600,marginBottom:'0.25rem'}}>Fakten-Check ({p.verification.claims.filter(c=>c.verdict==='verified').length}/{p.verification.claims.length})</div>
-                          {p.verification.claims.map((c, i) => (
-                            <div key={i} style={{padding:'0.375rem',marginBottom:'0.25rem',background:'#fff',borderRadius:'0.25rem',borderLeft:`3px solid ${c.verdict==='verified'?'#22c55e':c.verdict==='inaccurate'?'#f59e0b':c.verdict==='false'?'#ef4444':'#9ca3af'}`}}>
-                              <div style={{display:'flex',gap:'0.5rem',alignItems:'flex-start'}}>
-                                <span style={{flexShrink:0}}>{c.verdict==='verified'?'\u2705':c.verdict==='inaccurate'?'\u26a0\ufe0f':c.verdict==='false'?'\u274c':'\u2753'}</span>
-                                <div>
-                                  <div style={{fontStyle:'italic',color:'#374151'}}>\u201e{c.claim}\u201c</div>
-                                  <div style={{color:'#6b7280',marginTop:'0.125rem'}}>{c.details}</div>
-                                  {c.source_url && <a href={c.source_url} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',fontSize:'0.65rem'}}>{c.source_name || c.source_url}</a>}
+                  {/* Verification panel — clear "postable or not" verdict */}
+                  {p.verification && (() => {
+                    const v = p.verification
+                    const score = Math.round((p.verification_score||0)*100)
+                    const claimsOk = v.claims ? v.claims.filter(c=>c.verdict==='verified').length : 0
+                    const claimsTotal = v.claims ? v.claims.length : 0
+                    const claimsBad = v.claims ? v.claims.filter(c=>c.verdict==='false'||c.verdict==='inaccurate').length : 0
+                    const urlsOk = v.urls_checked ? v.urls_checked.filter(u=>u.reachable&&u.relevant).length : 0
+                    const urlsTotal = v.urls_checked ? v.urls_checked.length : 0
+                    const urlsBad = v.urls_checked ? v.urls_checked.filter(u=>!u.reachable).length : 0
+                    const entOk = v.entities ? v.entities.filter(e=>e.exists).length : 0
+                    const entTotal = v.entities ? v.entities.length : 0
+                    const hasFalse = v.claims && v.claims.some(c=>c.verdict==='false')
+                    const hasUnreachable = v.urls_checked && v.urls_checked.some(u=>!u.reachable)
+                    // Verdict logic
+                    let verdict, verdictColor, verdictBg, verdictBorder, verdictIcon
+                    if (score >= 90 && !hasFalse && !hasUnreachable) {
+                      verdict = 'Postbar'; verdictColor = '#166534'; verdictBg = '#f0fdf4'; verdictBorder = '#bbf7d0'; verdictIcon = '\u2705'
+                    } else if (score >= 70 && !hasFalse) {
+                      verdict = 'Postbar mit Korrekturen'; verdictColor = '#92400e'; verdictBg = '#fffbeb'; verdictBorder = '#fde68a'; verdictIcon = '\u26a0\ufe0f'
+                    } else {
+                      verdict = 'Nicht postbar'; verdictColor = '#991b1b'; verdictBg = '#fef2f2'; verdictBorder = '#fecaca'; verdictIcon = '\u274c'
+                    }
+                    const expanded = verifyExpanded[p.id]
+                    return (
+                      <div style={{margin:'0.5rem 0',borderRadius:'0.5rem',border:`1px solid ${verdictBorder}`,overflow:'hidden'}}>
+                        {/* Verdict header — always visible */}
+                        <div style={{padding:'0.625rem 0.75rem',background:verdictBg,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between'}} onClick={() => setVerifyExpanded(prev => ({...prev, [p.id]: !prev[p.id]}))}>
+                          <div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}>
+                            <span style={{fontSize:'1.1rem'}}>{verdictIcon}</span>
+                            <span style={{fontWeight:700,fontSize:'0.85rem',color:verdictColor}}>{verdict}</span>
+                            <span style={{fontSize:'0.7rem',color:'#6b7280',marginLeft:'0.25rem'}}>Score: {score}%</span>
+                          </div>
+                          <div style={{display:'flex',alignItems:'center',gap:'0.75rem'}}>
+                            <div style={{display:'flex',gap:'0.5rem',fontSize:'0.65rem',color:'#6b7280'}}>
+                              <span>Fakten {claimsOk}/{claimsTotal}</span>
+                              <span>\u00b7</span>
+                              <span>URLs {urlsOk}/{urlsTotal}</span>
+                              <span>\u00b7</span>
+                              <span>Entit\u00e4ten {entOk}/{entTotal}</span>
+                            </div>
+                            <span style={{fontSize:'0.6rem',color:'#9ca3af',transition:'transform 0.2s',transform:expanded?'rotate(180deg)':'rotate(0)'}}>\u25bc</span>
+                          </div>
+                        </div>
+                        {/* Critical issues — shown if not postable */}
+                        {!expanded && (claimsBad > 0 || urlsBad > 0) && (
+                          <div style={{padding:'0.5rem 0.75rem',fontSize:'0.7rem',color:verdictColor,background:'#fff',borderTop:`1px solid ${verdictBorder}`}}>
+                            <strong>Kritisch:</strong>{' '}
+                            {claimsBad > 0 && <span>{claimsBad} falsche/ungenaue Behauptung{claimsBad>1?'en':''}</span>}
+                            {claimsBad > 0 && urlsBad > 0 && <span> \u00b7 </span>}
+                            {urlsBad > 0 && <span>{urlsBad} nicht erreichbare URL{urlsBad>1?'s':''}</span>}
+                          </div>
+                        )}
+                        {/* Expandable details */}
+                        {expanded && (
+                          <div style={{padding:'0.75rem',background:'#fff',fontSize:'0.72rem'}}>
+                            {/* Claims */}
+                            {v.claims && v.claims.length > 0 && (
+                              <div style={{marginBottom:'0.75rem'}}>
+                                <div style={{fontWeight:600,marginBottom:'0.375rem',fontSize:'0.75rem',color:'#374151'}}>Fakten-Check ({claimsOk}/{claimsTotal})</div>
+                                {v.claims.map((c, i) => (
+                                  <div key={i} style={{padding:'0.375rem 0.5rem',marginBottom:'0.25rem',background:c.verdict==='verified'?'#f0fdf4':c.verdict==='false'?'#fef2f2':'#fffbeb',borderRadius:'0.375rem',borderLeft:`3px solid ${c.verdict==='verified'?'#22c55e':c.verdict==='inaccurate'?'#f59e0b':c.verdict==='false'?'#ef4444':'#9ca3af'}`}}>
+                                    <div style={{display:'flex',gap:'0.375rem',alignItems:'flex-start'}}>
+                                      <span style={{flexShrink:0,fontSize:'0.8rem'}}>{c.verdict==='verified'?'\u2705':c.verdict==='inaccurate'?'\u26a0\ufe0f':c.verdict==='false'?'\u274c':'\u2753'}</span>
+                                      <div style={{flex:1,minWidth:0}}>
+                                        <div style={{fontStyle:'italic',color:'#374151',lineHeight:1.4}}>\u201e{c.claim}\u201c</div>
+                                        <div style={{color:'#6b7280',marginTop:'0.25rem',lineHeight:1.4}}>{c.details}</div>
+                                        {c.source_url && <a href={c.source_url} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',fontSize:'0.65rem',display:'inline-block',marginTop:'0.125rem'}}>{c.source_name || 'Quelle'}</a>}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {/* URLs */}
+                            {v.urls_checked && v.urls_checked.length > 0 && (
+                              <div style={{marginBottom:'0.75rem'}}>
+                                <div style={{fontWeight:600,marginBottom:'0.375rem',fontSize:'0.75rem',color:'#374151'}}>URL-Check ({urlsOk}/{urlsTotal})</div>
+                                {v.urls_checked.map((u, i) => (
+                                  <div key={i} style={{padding:'0.25rem 0',display:'flex',gap:'0.375rem',alignItems:'flex-start',borderBottom:'1px solid #f3f4f6'}}>
+                                    <span style={{flexShrink:0,fontSize:'0.8rem'}}>{u.reachable && u.relevant ? '\u2705' : u.reachable ? '\u26a0\ufe0f' : '\u274c'}</span>
+                                    <div style={{flex:1,minWidth:0}}>
+                                      <div style={{color:'#374151',wordBreak:'break-all',fontSize:'0.65rem',fontFamily:'monospace'}}>{u.url}</div>
+                                      <div style={{color:'#6b7280',fontSize:'0.62rem',marginTop:'0.125rem',lineHeight:1.3}}>{u.details}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {/* Entities */}
+                            {v.entities && v.entities.length > 0 && (
+                              <div>
+                                <div style={{fontWeight:600,marginBottom:'0.375rem',fontSize:'0.75rem',color:'#374151'}}>Entit\u00e4ten ({entOk}/{entTotal})</div>
+                                <div style={{display:'flex',flexWrap:'wrap',gap:'0.25rem'}}>
+                                  {v.entities.map((e, i) => (
+                                    <span key={i} style={{display:'inline-flex',alignItems:'center',gap:'0.25rem',padding:'0.2rem 0.5rem',background:e.exists?'#f0fdf4':'#fef2f2',border:`1px solid ${e.exists?'#bbf7d0':'#fecaca'}`,borderRadius:'1rem',fontSize:'0.62rem',color:e.exists?'#166534':'#991b1b'}} title={e.details}>
+                                      {e.exists ? '\u2705' : '\u274c'} {e.name}
+                                    </span>
+                                  ))}
                                 </div>
                               </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {/* URLs */}
-                      {p.verification.urls_checked && p.verification.urls_checked.length > 0 && (
-                        <div style={{marginBottom:'0.5rem'}}>
-                          <div style={{fontWeight:600,marginBottom:'0.25rem'}}>URL-Check ({p.verification.urls_checked.filter(u=>u.reachable&&u.relevant).length}/{p.verification.urls_checked.length})</div>
-                          {p.verification.urls_checked.map((u, i) => (
-                            <div key={i} style={{padding:'0.25rem 0.375rem',display:'flex',gap:'0.5rem',alignItems:'center'}}>
-                              <span>{u.reachable && u.relevant ? '\u2705' : u.reachable ? '\u26a0\ufe0f' : '\u274c'}</span>
-                              <span style={{color:'#374151',wordBreak:'break-all',fontSize:'0.65rem'}}>{u.url}</span>
-                              <span style={{color:'#6b7280',fontSize:'0.6rem',flexShrink:0}}>{u.details}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {/* Entities */}
-                      {p.verification.entities && p.verification.entities.length > 0 && (
-                        <div>
-                          <div style={{fontWeight:600,marginBottom:'0.25rem'}}>Entit\u00e4ten ({p.verification.entities.filter(e=>e.exists).length}/{p.verification.entities.length})</div>
-                          {p.verification.entities.map((e, i) => (
-                            <div key={i} style={{padding:'0.25rem 0.375rem',display:'flex',gap:'0.5rem',alignItems:'center'}}>
-                              <span>{e.exists ? '\u2705' : '\u274c'}</span>
-                              <strong style={{fontSize:'0.7rem'}}>{e.name}</strong>
-                              <span className="badge badge-gray" style={{fontSize:'0.5rem'}}>{e.type}</span>
-                              <span style={{color:'#6b7280',fontSize:'0.6rem'}}>{e.details}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {p.verification.issues && p.verification.issues.length > 0 && (
-                        <div style={{marginTop:'0.5rem',padding:'0.375rem',background:'#fef3c7',borderRadius:'0.25rem',color:'#92400e',fontSize:'0.65rem'}}>
-                          <strong>Probleme:</strong> {p.verification.issues.join(' | ')}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {p.verification_status === 'verified' && !verifyExpanded[p.id] && p.verification && (
-                    <div style={{padding:'0.375rem 0.75rem',fontSize:'0.65rem',color:'#16a34a',cursor:'pointer'}} onClick={() => setVerifyExpanded(prev => ({...prev, [p.id]: true}))}>
-                      \u2713 {p.verification.summary} \u2014 <span style={{textDecoration:'underline'}}>Details anzeigen</span>
-                    </div>
-                  )}
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
                   <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
                 </div>
               ))}{posts.length === 0 && <p className="empty">Noch keine Posts. Wähle oben eine Kategorie und klicke "Generieren".</p>}
