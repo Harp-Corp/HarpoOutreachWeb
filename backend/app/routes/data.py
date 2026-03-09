@@ -4,8 +4,11 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 from datetime import datetime
 from uuid import UUID, uuid4
+
+logger = logging.getLogger("harpo.data")
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -203,10 +206,20 @@ async def generate_social_post(
     if not api_key:
         raise HTTPException(400, "Perplexity API Key fehlt.")
 
+    # Support both predefined enum topics AND free-text custom topics
+    topic_value = topic
+    topic_prefix = ""
     try:
         ct = ContentTopic(topic)
+        topic_value = ct.value
+        topic_prefix = ct.prompt_prefix
     except ValueError:
-        raise HTTPException(400, f"Unbekanntes Thema: {topic}")
+        # Free-text custom topic — use as-is with a generic prompt prefix
+        topic_value = topic.strip()
+        if not topic_value:
+            raise HTTPException(400, "Thema darf nicht leer sein.")
+        topic_prefix = f"Write an expert analysis about {topic_value} and its impact on"
+        logger.info(f"[GeneratePost] Custom topic: {topic_value}")
 
     # Always LinkedIn — Twitter/X removed
     sp = SocialPlatform.linkedin
@@ -228,7 +241,7 @@ async def generate_social_post(
         previews.append(f"--- K\u00dcRZLICH AUF LINKEDIN VER\u00d6FFENTLICHT ---\n{linkedin_context}")
 
     result = await pplx.generate_social_post(
-        ct.value, ct.prompt_prefix, sp.value, ind_list, previews, api_key
+        topic_value, topic_prefix, sp.value, ind_list, previews, api_key
     )
 
     # Add timestamp to the post content
