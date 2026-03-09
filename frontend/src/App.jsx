@@ -1712,31 +1712,31 @@ function App() {
                         const s = Math.round((p.verification_score||0)*100)
                         const noFalse = !p.verification?.claims?.some(c=>c.verdict==='false')
                         const noDeadUrls = !p.verification?.urls_checked?.some(u=>!u.reachable)
-                        if (s >= 90 && noFalse && noDeadUrls) return <span className="badge badge-green" style={{fontSize:'0.55rem'}}>\u2705 Postbar</span>
-                        if (s >= 70 && noFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>\u26a0\ufe0f Postbar mit Korrekturen</span>
-                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>\u274c Nicht postbar</span>
+                        if (s >= 90 && noFalse && noDeadUrls) return <span className="badge badge-green" style={{fontSize:'0.55rem'}}>✅ Postbar</span>
+                        if (s >= 70 && noFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⚠️ Postbar mit Korrekturen</span>
+                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>❌ Nicht postbar</span>
                       })()}
                       {p.verification_status === 'issues_found' && (() => {
                         const s = Math.round((p.verification_score||0)*100)
                         const hasFalse = p.verification?.claims?.some(c=>c.verdict==='false')
-                        if (s >= 70 && !hasFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>\u26a0\ufe0f Postbar mit Korrekturen</span>
-                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>\u274c Nicht postbar</span>
+                        if (s >= 70 && !hasFalse) return <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⚠️ Postbar mit Korrekturen</span>
+                        return <span className="badge badge-red" style={{fontSize:'0.55rem'}}>❌ Nicht postbar</span>
                       })()}
-                      {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>\u23f3 Pr\u00fcfung l\u00e4uft...</span>}
-                      {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungepr\u00fcft</span>}
+                      {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⏳ Prüfung läuft...</span>}
+                      {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungeprüft</span>}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
-                      {p.verification_status !== 'checking' && <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem'}} disabled={loading} onClick={() => verifyPost(p.id)}>{p.verification_status === 'unverified' ? '\ud83d\udd0d Pr\u00fcfen' : '\ud83d\udd04 Erneut pr\u00fcfen'}</button>}
+                      {p.verification_status !== 'checking' && <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem'}} disabled={loading} onClick={() => verifyPost(p.id)}>{p.verification_status === 'unverified' ? '🔍 Prüfen' : '🔄 Erneut prüfen'}</button>}
                       {p.is_published ? (
-                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Ver\u00f6ffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
+                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
                       ) : p.publish_pending ? (
-                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange \u2026</span>
+                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange …</span>
                         <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem',color:'#ef4444'}} onClick={() => cancelPublish(p.id)}>Abbrechen</button></>
                       ) : (
                         <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Auf LinkedIn posten</button>
                       )}
                       <button className="btn btn-ghost btn-sm" onClick={() => copyPost(p.id, p.content)}>{p.is_copied ? 'Erneut kopieren' : 'Kopieren'}</button>
-                      {!p.is_published && !p.publish_pending && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>\u00d7</button>}
+                      {!p.is_published && !p.publish_pending && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>}
                     </div>
                   </div>
                   {/* Verification panel — clear "postable or not" verdict */}
