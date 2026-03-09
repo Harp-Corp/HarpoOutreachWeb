@@ -327,9 +327,10 @@ async def generate_social_post(
                     not u.get("reachable")
                     for u in verification.get("urls_checked", [])
                 )
-                # "Postbar" = score >= 0.9 AND no false claims AND no dead URLs
-                # Everything below 0.9 is "nicht postbar" and must be auto-fixed
-                is_postable = (score >= 0.9 and not has_false and not has_dead_urls)
+                # "Postbar" = score >= 0.9 AND no false claims
+                # Dead URLs alone don't make a post "nicht postbar" — they may be
+                # temporarily unreachable. Only false/inaccurate claims matter.
+                is_postable = (score >= 0.9 and not has_false)
 
                 if is_postable or regen_attempt >= MAX_AUTO_REGEN:
                     if is_postable:
