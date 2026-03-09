@@ -1746,6 +1746,148 @@ Return ONLY valid JSON with content and hashtags."""
         return {"content": ensure_footer(fallback), "hashtags": []}
 
 
+# ─── 7a-bis) Regenerate a Post based on Cross-Check Feedback ────
+
+async def regenerate_social_post(
+    original_content: str,
+    verification_issues: list[dict],
+    platform: str,
+    api_key: str,
+) -> dict:
+    """Regenerate a social post using cross-check results as correction guidance.
+    
+    Takes the original post and its verification issues, then generates a new
+    version that fixes the identified problems while keeping the same topic.
+    """
+    # Build a concise correction brief from the verification issues
+    corrections = []
+    for issue in verification_issues:
+        kind = issue.get("type", "")
+        detail = issue.get("detail", "")
+        if kind == "false_claim":
+            corrections.append(f"FALSCHE BEHAUPTUNG entfernen: {detail}")
+        elif kind == "inaccurate_claim":
+            corrections.append(f"UNGENAUE AUSSAGE korrigieren: {detail}")
+        elif kind == "unverifiable_claim":
+            corrections.append(f"NICHT BELEGBARE AUSSAGE entfernen oder mit Quelle belegen: {detail}")
+        elif kind == "bad_url":
+            corrections.append(f"FALSCHE/IRRELEVANTE URL entfernen: {detail}")
+        elif kind == "missing_entity":
+            corrections.append(f"NICHT EXISTIERENDE ENTITÄT korrigieren: {detail}")
+        else:
+            corrections.append(f"Problem beheben: {detail}")
+
+    corrections_text = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(corrections))
+
+    system = """You are a social media expert rewriting a LinkedIn post for Harpocrates Solutions GmbH.
+
+ABOUT HARPOCRATES:
+Harpocrates Solutions is a Berlin-based RegTech company. Their product COMPLY is a SaaS platform for automated compliance monitoring, regulatory change management, and risk assessment. COMPLY.Reg is the core module for regulatory obligation tracking. This is HARPOCRATES' OWN PRODUCT — reference it as "our COMPLY platform" or "COMPLY.Reg", never as a third-party tool.
+
+Your task: REWRITE the post below, fixing ALL identified problems while keeping the same topic and overall message.
+
+CRITICAL FORMAT RULES (LinkedIn is PLAIN TEXT, not Markdown):
+1. NO MARKDOWN whatsoever. No **bold**, no *italic*, no [text](url) links.
+2. URLs must be written as plain text: https://example.com (LinkedIn auto-links them)
+3. Use CAPS or UPPER CASE for emphasis instead of markdown bold.
+4. Use bullet points with — characters, not markdown lists.
+5. Line breaks for readability. Short paragraphs (2-3 sentences max).
+
+CONTENT RULES:
+1. LANGUAGE: English with correct capitalisation.
+2. GEOGRAPHIC FOCUS: Europe only (EU, EEA, UK, Switzerland). No US/SEC references.
+3. CURRENCY: All amounts in EUR (€).
+4. FACTS: Only verifiable facts. Cite sources inline (e.g. "According to ESMA's March 2026 report").
+5. NO HALLUCINATIONS: Do NOT invent URLs, reports, or statistics.
+6. Leave [1], [2] citation markers — they will be resolved to real URLs from search results.
+7. COMPLY MENTION: Reference COMPLY naturally as "our platform" or "At Harpocrates, our COMPLY.Reg module..."
+8. FOOTER: Do NOT include any footer, website, email, or timestamp. These are added automatically.
+9. NO HASHTAGS in the content body. Return them separately in the JSON.
+
+Return JSON: {"content": "...", "hashtags": [...]}"""
+
+    user = f"""REWRITE this LinkedIn post, fixing the problems listed below.
+Keep the same topic but make ALL corrections. The new post must be factually accurate.
+
+ORIGINAL POST:
+{original_content[:2000]}
+
+PROBLEMS TO FIX:
+{corrections_text}
+
+REQUIREMENTS:
+- Fix ALL listed problems
+- Keep the same topic and general angle
+- PLAIN TEXT only (no markdown)
+- Europe-focused, all amounts in EUR (€)
+- Only use verifiable facts with source attribution
+- Leave [1], [2] citation markers — do NOT write URLs yourself
+- Reference COMPLY/COMPLY.Reg as Harpocrates' own product
+- 150-250 words
+- Closing question or CTA
+Return ONLY valid JSON with content and hashtags."""
+
+    content = await _call_api(
+        system, user, api_key,
+        max_tokens=3000,
+        model=MODEL_REASONING,
+        search_recency_filter="week",
+        search_domain_filter=DOMAINS_REGULATORY + ["ft.com", "reuters.com", "ecb.europa.eu", "eba.europa.eu", "esma.europa.eu", "european-commission.europa.eu"],
+        search_language_filter=["en", "de", "fr"],
+        user_location=_eu_location(),
+        search_context_size="high",
+        return_citations=True,
+    )
+
+    raw = content if isinstance(content, str) else content.get("content", "")
+    citations = content.get("citations", []) if isinstance(content, dict) else []
+
+    cleaned = _clean_json(raw)
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list) and len(data) > 0:
+            data = data[0] if isinstance(data[0], dict) else {"content": raw}
+        if not isinstance(data, dict):
+            data = {"content": raw}
+        raw_content = data.get("content", raw)
+        hashtags = data.get("hashtags", [])
+        hashtag_line = " ".join(
+            h if h.startswith("#") else f"#{h}" for h in hashtags
+        )
+
+        full = _resolve_citations(raw_content, citations)
+        full = strip_trailing_hashtags(full)
+        full = _strip_markdown(full)
+
+        # Sources from Perplexity API citations only
+        source_entries = []
+        if citations:
+            seen_domains = set()
+            for url in citations[:8]:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).hostname or ""
+                    domain = domain.replace("www.", "")
+                except Exception:
+                    domain = url
+                if domain not in seen_domains:
+                    seen_domains.add(domain)
+                    source_entries.append(url)
+        if source_entries:
+            full += "\n\nQuellen:\n" + "\n".join(f"• {url}" for url in source_entries[:5])
+
+        if hashtag_line:
+            full += "\n\n" + hashtag_line
+        full = ensure_footer(full)
+        return {"content": full, "hashtags": hashtags}
+    except json.JSONDecodeError:
+        fallback = _resolve_citations(raw, citations)
+        fallback = _strip_markdown(fallback)
+        if citations:
+            fallback += "\n\nQuellen:\n" + "\n".join(f"• {url}" for url in citations[:5])
+        return {"content": ensure_footer(fallback), "hashtags": []}
+
+
 # ─── 7b) Cross-Check / Fact-Verify a Social Post ────────────────
 
 async def cross_check_post(

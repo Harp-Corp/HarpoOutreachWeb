@@ -460,6 +460,15 @@ function App() {
     } catch (e) { setError(e.message) }
     stopLoading()
   }
+  const regeneratePost = async (postId) => {
+    startLoading('Post wird neu generiert + Cross-Check...'); setError('')
+    try {
+      await fetchJson(`${API}/data/social-posts/${postId}/regenerate`, { method: 'POST' }, 0)
+      showSuccess('Post neu generiert und geprüft')
+      await loadPosts()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
   const deletePost = async (postId) => {
     try { await fetchJson(`${API}/data/social-posts/${postId}`, { method: 'DELETE' }); await loadPosts() } catch (e) { setError(e.message) }
   }
@@ -1783,13 +1792,18 @@ function App() {
                             <span style={{fontSize:'0.6rem',color:'#9ca3af',transition:'transform 0.2s',transform:expanded?'rotate(180deg)':'rotate(0)'}}>▼</span>
                           </div>
                         </div>
-                        {/* Critical issues — shown if not postable */}
-                        {!expanded && (claimsBad > 0 || urlsBad > 0) && (
-                          <div style={{padding:'0.5rem 0.75rem',fontSize:'0.7rem',color:verdictColor,background:'#fff',borderTop:`1px solid ${verdictBorder}`}}>
-                            <strong>Kritisch:</strong>{' '}
-                            {claimsBad > 0 && <span>{claimsBad} falsche/ungenaue Behauptung{claimsBad>1?'en':''}</span>}
-                            {claimsBad > 0 && urlsBad > 0 && <span> · </span>}
-                            {urlsBad > 0 && <span>{urlsBad} nicht erreichbare URL{urlsBad>1?'s':''}</span>}
+                        {/* Critical issues + regenerate button */}
+                        {verdict !== 'Postbar' && !p.is_published && (
+                          <div style={{padding:'0.5rem 0.75rem',fontSize:'0.7rem',background:'#fff',borderTop:`1px solid ${verdictBorder}`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:'0.5rem'}}>
+                            <div style={{color:verdictColor}}>
+                              {(claimsBad > 0 || urlsBad > 0) && <><strong>Kritisch:</strong>{' '}</>}
+                              {claimsBad > 0 && <span>{claimsBad} falsche/ungenaue Behauptung{claimsBad>1?'en':''}</span>}
+                              {claimsBad > 0 && urlsBad > 0 && <span> · </span>}
+                              {urlsBad > 0 && <span>{urlsBad} nicht erreichbare URL{urlsBad>1?'s':''}</span>}
+                            </div>
+                            <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.75rem',whiteSpace:'nowrap',flexShrink:0}} disabled={loading} onClick={(e) => { e.stopPropagation(); regeneratePost(p.id) }}>
+                              🔄 Neu generieren
+                            </button>
                           </div>
                         )}
                         {/* Expandable details */}

@@ -351,6 +351,109 @@ async def verify_social_post(post_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(500, f"Cross-Check fehlgeschlagen: {str(e)}")
 
 
+@router.post("/social-posts/{post_id}/regenerate")
+async def regenerate_social_post(post_id: UUID, db: Session = Depends(get_db)):
+    """Regenerate a social post based on its cross-check results.
+    Takes the verification issues as correction guidance and generates
+    a new version that fixes the identified problems."""
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+    if post.is_published:
+        raise HTTPException(400, "Ver\u00f6ffentlichte Posts k\u00f6nnen nicht neu generiert werden.")
+
+    api_key = db_svc.get_setting(db, "perplexity_api_key")
+    if not api_key:
+        raise HTTPException(400, "Perplexity API Key fehlt.")
+
+    # Extract issues from verification JSON for correction guidance
+    issues = []
+    try:
+        vj = post.verification_json
+        if vj:
+            verification = json.loads(vj)
+            # Claims with problems
+            for c in verification.get("claims", []):
+                if c.get("verdict") == "false":
+                    issues.append({"type": "false_claim", "detail": f"{c.get('claim', '')} — {c.get('details', '')}"})
+                elif c.get("verdict") == "inaccurate":
+                    issues.append({"type": "inaccurate_claim", "detail": f"{c.get('claim', '')} — {c.get('details', '')}"})
+                elif c.get("verdict") == "unverifiable":
+                    issues.append({"type": "unverifiable_claim", "detail": c.get("claim", "")})
+            # Bad URLs
+            for u in verification.get("urls_checked", []):
+                if not u.get("reachable"):
+                    issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht erreichbar"})
+                elif not u.get("relevant"):
+                    issues.append({"type": "bad_url", "detail": f"{u.get('url', '')} — nicht relevant f\u00fcr das Thema"})
+            # Missing entities
+            for e in verification.get("entities", []):
+                if not e.get("exists"):
+                    issues.append({"type": "missing_entity", "detail": f"{e.get('name', '')} — {e.get('details', '')}"})
+    except Exception as ex:
+        logger.warning(f"Could not parse verification JSON: {ex}")
+
+    if not issues:
+        raise HTTPException(400, "Keine Probleme gefunden \u2014 Post muss nicht neu generiert werden.")
+
+    # Mark as regenerating
+    post.verification_status = "checking"
+    db.commit()
+
+    try:
+        result = await pplx.regenerate_social_post(
+            original_content=post.content,
+            verification_issues=issues,
+            platform=post.platform,
+            api_key=api_key,
+        )
+
+        # Add timestamp
+        timestamp_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+        content_with_ts = result["content"]
+        if "\U0001f517 www.harpocrates-corp.com" in content_with_ts:
+            content_with_ts = content_with_ts.replace(
+                "\U0001f517 www.harpocrates-corp.com",
+                f"\n\n\U0001f4c5 {timestamp_str}\n\n\U0001f517 www.harpocrates-corp.com",
+            )
+        else:
+            content_with_ts += f"\n\n\U0001f4c5 {timestamp_str}"
+
+        # Update post in-place (same ID, new content)
+        post.content = content_with_ts
+        post.hashtags_json = json.dumps(result["hashtags"])
+        post.is_copied = False
+        post.verification_status = "unverified"
+        post.verification_score = None
+        post.verification_json = None
+        db.commit()
+
+        # Auto cross-check the regenerated post
+        try:
+            post.verification_status = "checking"
+            db.commit()
+            verification = await pplx.cross_check_post(content_with_ts, api_key)
+            post.verification_status = verification["status"]
+            post.verification_score = verification["score"]
+            post.verification_json = json.dumps(verification, ensure_ascii=False)
+            db.commit()
+            db.refresh(post)
+            logger.info(f"Regeneration cross-check: score={verification['score']}, status={verification['status']}")
+        except Exception as e:
+            logger.warning(f"Regeneration cross-check failed (non-blocking): {e}")
+            post.verification_status = "unverified"
+            db.commit()
+            db.refresh(post)
+
+        return {"success": True, "data": db_svc.social_post_to_response(post)}
+    except Exception as e:
+        post.verification_status = "unverified"
+        db.commit()
+        logger.error(f"Regeneration failed for post {post_id}: {e}")
+        raise HTTPException(500, f"Neu-Generierung fehlgeschlagen: {str(e)}")
+
+
 @router.delete("/social-posts/{post_id}")
 async def remove_social_post(post_id: UUID, db: Session = Depends(get_db)):
     db_svc.delete_social_post(db, post_id)
