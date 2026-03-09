@@ -361,13 +361,25 @@ async def generate_social_post(
                     logger.info("No specific issues extracted despite low score, skipping regen")
                     break
 
-                # Regenerate
-                regen_result = await pplx.regenerate_social_post(
-                    original_content=current_content,
-                    verification_issues=issues,
-                    platform=post_obj.platform,
-                    api_key=api_key,
-                )
+                # Regenerate — retry up to 2x if LLM returns meta-response
+                regen_ok = False
+                for regen_retry in range(2):
+                    try:
+                        regen_result = await pplx.regenerate_social_post(
+                            original_content=current_content,
+                            verification_issues=issues,
+                            platform=post_obj.platform,
+                            api_key=api_key,
+                        )
+                        regen_ok = True
+                        break
+                    except ValueError as ve:
+                        logger.warning(f"Regen retry {regen_retry+1}: {ve}")
+
+                if not regen_ok:
+                    logger.warning("Regeneration returned meta-responses, keeping current content")
+                    break
+
                 # Add timestamp
                 timestamp_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
                 new_content = regen_result["content"]
