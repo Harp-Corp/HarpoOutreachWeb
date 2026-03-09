@@ -310,8 +310,10 @@ async def mark_post_copied(post_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/social-posts/{post_id}/publish-linkedin")
 async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
-    """Publish a social post directly to LinkedIn as Harpocrates organization.
-    Requires linkedin_access_token and linkedin_org_id in settings."""
+    """Publish a social post to LinkedIn.
+    Strategy: Try organization posting first (requires w_organization_social scope).
+    If that fails with 403, fall back to person posting (w_member_social scope).
+    Requires linkedin_access_token in settings. Also needs linkedin_org_id or linkedin_person_urn."""
     import httpx
 
     # Get the post
@@ -325,49 +327,74 @@ async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
     # Get LinkedIn credentials from settings
     access_token = db_svc.get_setting(db, "linkedin_access_token")
     org_id = db_svc.get_setting(db, "linkedin_org_id")
+    person_urn = db_svc.get_setting(db, "linkedin_person_urn")
     if not access_token:
         raise HTTPException(400, "LinkedIn Access Token fehlt. Bitte in den Einstellungen hinterlegen.")
-    if not org_id:
-        raise HTTPException(400, "LinkedIn Organization ID fehlt. Bitte in den Einstellungen hinterlegen.")
+    if not org_id and not person_urn:
+        raise HTTPException(400, "LinkedIn Organization ID oder Person URN fehlt. Bitte in den Einstellungen hinterlegen.")
 
-    # Strip hashtags from content if they're appended separately
     post_text = post.content
-
-    # Build LinkedIn API request (REST API v2)
-    payload = {
-        "author": f"urn:li:organization:{org_id}",
-        "commentary": post_text,
-        "visibility": "PUBLIC",
-        "distribution": {
-            "feedDistribution": "MAIN_FEED",
-            "targetEntities": [],
-            "thirdPartyDistributionChannels": [],
-        },
-        "lifecycleState": "PUBLISHED",
-        "isReshareDisabledByAuthor": False,
-    }
 
     headers = {
         "Authorization": f"Bearer {access_token}",
         "X-Restli-Protocol-Version": "2.0.0",
-        "LinkedIn-Version": "202402",
+        "LinkedIn-Version": "202501",
         "Content-Type": "application/json",
     }
 
+    def _build_payload(author_urn: str) -> dict:
+        return {
+            "author": author_urn,
+            "commentary": post_text,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
+            },
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        }
+
+    async def _try_post(client: httpx.AsyncClient, author_urn: str):
+        payload = _build_payload(author_urn)
+        logger.info(f"LinkedIn: posting as {author_urn}")
+        resp = await client.post(
+            "https://api.linkedin.com/rest/posts",
+            json=payload,
+            headers=headers,
+        )
+        return resp
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                "https://api.linkedin.com/rest/posts",
-                json=payload,
-                headers=headers,
-            )
+            # Strategy: try org first, fall back to person
+            resp = None
+            used_author = None
+
+            if org_id:
+                org_urn = f"urn:li:organization:{org_id}"
+                resp = await _try_post(client, org_urn)
+                used_author = org_urn
+                # If org posting fails with 403 (no w_organization_social scope),
+                # fall back to person posting
+                if resp.status_code == 403 and person_urn:
+                    logger.info(f"LinkedIn: org posting denied, falling back to person {person_urn}")
+                    person_author = f"urn:li:person:{person_urn}"
+                    resp = await _try_post(client, person_author)
+                    used_author = person_author
+            elif person_urn:
+                person_author = f"urn:li:person:{person_urn}"
+                resp = await _try_post(client, person_author)
+                used_author = person_author
+
+        if resp is None:
+            raise HTTPException(400, "Keine LinkedIn-Identität konfiguriert.")
 
         if resp.status_code == 201:
-            # Success — extract post ID from header
             linkedin_post_id = resp.headers.get("x-restli-id", "")
-            logger.info(f"LinkedIn post published: {linkedin_post_id}")
+            logger.info(f"LinkedIn post published as {used_author}: {linkedin_post_id}")
 
-            # Update post in DB
             post.is_published = True
             post.linkedin_post_id = linkedin_post_id
             post.published_at = datetime.utcnow()
@@ -377,6 +404,7 @@ async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
             return {
                 "success": True,
                 "linkedin_post_id": linkedin_post_id,
+                "posted_as": used_author,
                 "data": db_svc.social_post_to_response(post),
             }
         elif resp.status_code == 401:
@@ -384,7 +412,10 @@ async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
             raise HTTPException(401, "LinkedIn Access Token ist abgelaufen oder ungültig. Bitte in den Einstellungen erneuern.")
         elif resp.status_code == 403:
             logger.error(f"LinkedIn permission denied: {resp.text}")
-            raise HTTPException(403, "Keine Berechtigung zum Posten auf dieser LinkedIn-Seite. Prüfe die OAuth-Scopes und Admin-Rechte.")
+            raise HTTPException(403, "Keine Berechtigung zum Posten. Prüfe die OAuth-Scopes (w_member_social / w_organization_social) und Admin-Rechte.")
+        elif resp.status_code == 426:
+            logger.error(f"LinkedIn API version error: {resp.text}")
+            raise HTTPException(502, f"LinkedIn API-Version nicht unterstützt. Bitte Backend aktualisieren. Detail: {resp.text[:200]}")
         else:
             logger.error(f"LinkedIn API error {resp.status_code}: {resp.text}")
             raise HTTPException(502, f"LinkedIn API Fehler ({resp.status_code}): {resp.text[:200]}")
