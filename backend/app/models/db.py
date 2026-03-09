@@ -135,6 +135,8 @@ class SocialPostDB(Base):
     created_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     is_published = Column(Boolean, nullable=False, default=False)
     is_copied = Column(Boolean, nullable=False, default=False)
+    linkedin_post_id = Column(String, nullable=True)  # LinkedIn post URN after publishing
+    published_at = Column(DateTime, nullable=True)  # When the post was published to LinkedIn
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -197,6 +199,16 @@ def init_db():
             with engine.begin() as conn:
                 conn.execute(text(
                     "ALTER TABLE social_posts ADD COLUMN is_copied BOOLEAN NOT NULL DEFAULT false"
+                ))
+        if "linkedin_post_id" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE social_posts ADD COLUMN linkedin_post_id VARCHAR"
+                ))
+        if "published_at" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE social_posts ADD COLUMN published_at TIMESTAMP"
                 ))
     # Analytics-related columns on leads
     if "leads" in insp.get_table_names():

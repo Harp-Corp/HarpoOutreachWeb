@@ -308,6 +308,96 @@ async def mark_post_copied(post_id: UUID, db: Session = Depends(get_db)):
     return {"success": True, "data": db_svc.social_post_to_response(obj)}
 
 
+@router.post("/social-posts/{post_id}/publish-linkedin")
+async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
+    """Publish a social post directly to LinkedIn as Harpocrates organization.
+    Requires linkedin_access_token and linkedin_org_id in settings."""
+    import httpx
+
+    # Get the post
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+    if post.is_published:
+        raise HTTPException(400, "Post wurde bereits veröffentlicht.")
+
+    # Get LinkedIn credentials from settings
+    access_token = db_svc.get_setting(db, "linkedin_access_token")
+    org_id = db_svc.get_setting(db, "linkedin_org_id")
+    if not access_token:
+        raise HTTPException(400, "LinkedIn Access Token fehlt. Bitte in den Einstellungen hinterlegen.")
+    if not org_id:
+        raise HTTPException(400, "LinkedIn Organization ID fehlt. Bitte in den Einstellungen hinterlegen.")
+
+    # Strip hashtags from content if they're appended separately
+    post_text = post.content
+
+    # Build LinkedIn API request (REST API v2)
+    payload = {
+        "author": f"urn:li:organization:{org_id}",
+        "commentary": post_text,
+        "visibility": "PUBLIC",
+        "distribution": {
+            "feedDistribution": "MAIN_FEED",
+            "targetEntities": [],
+            "thirdPartyDistributionChannels": [],
+        },
+        "lifecycleState": "PUBLISHED",
+        "isReshareDisabledByAuthor": False,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Restli-Protocol-Version": "2.0.0",
+        "LinkedIn-Version": "202402",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.linkedin.com/rest/posts",
+                json=payload,
+                headers=headers,
+            )
+
+        if resp.status_code == 201:
+            # Success — extract post ID from header
+            linkedin_post_id = resp.headers.get("x-restli-id", "")
+            logger.info(f"LinkedIn post published: {linkedin_post_id}")
+
+            # Update post in DB
+            post.is_published = True
+            post.linkedin_post_id = linkedin_post_id
+            post.published_at = datetime.utcnow()
+            db.commit()
+            db.refresh(post)
+
+            return {
+                "success": True,
+                "linkedin_post_id": linkedin_post_id,
+                "data": db_svc.social_post_to_response(post),
+            }
+        elif resp.status_code == 401:
+            logger.error(f"LinkedIn auth failed: {resp.text}")
+            raise HTTPException(401, "LinkedIn Access Token ist abgelaufen oder ungültig. Bitte in den Einstellungen erneuern.")
+        elif resp.status_code == 403:
+            logger.error(f"LinkedIn permission denied: {resp.text}")
+            raise HTTPException(403, "Keine Berechtigung zum Posten auf dieser LinkedIn-Seite. Prüfe die OAuth-Scopes und Admin-Rechte.")
+        else:
+            logger.error(f"LinkedIn API error {resp.status_code}: {resp.text}")
+            raise HTTPException(502, f"LinkedIn API Fehler ({resp.status_code}): {resp.text[:200]}")
+
+    except httpx.TimeoutException:
+        raise HTTPException(504, "LinkedIn API Timeout. Bitte erneut versuchen.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"LinkedIn publish error: {e}")
+        raise HTTPException(500, f"Fehler beim Veröffentlichen: {str(e)}")
+
+
 # ─── Address Book ─────────────────────────────────────────────────
 
 @router.get("/address-book")
@@ -504,7 +594,7 @@ async def get_settings(db: Session = Depends(get_db)):
     # Mask sensitive keys
     safe = {}
     for k, v in all_settings.items():
-        if k in ("perplexity_api_key", "google_client_secret", "google_access_token", "google_refresh_token"):
+        if k in ("perplexity_api_key", "google_client_secret", "google_access_token", "google_refresh_token", "linkedin_access_token"):
             safe[k] = "***" if v else ""
         else:
             safe[k] = v
@@ -589,4 +679,3 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
 async def dashboard(db: Session = Depends(get_db)):
     stats = db_svc.get_dashboard_stats(db)
     return {"data": stats}
-

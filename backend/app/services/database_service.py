@@ -427,7 +427,7 @@ def save_social_post(db: Session, data: dict) -> SocialPostDB:
     post_id = data.get("id", uuid4())
     existing = db.get(SocialPostDB, post_id)
     if existing:
-        for k in ("platform", "content", "is_published", "is_copied"):
+        for k in ("platform", "content", "is_published", "is_copied", "linkedin_post_id", "published_at"):
             if k in data:
                 setattr(existing, k, data[k])
         if "hashtags" in data:
@@ -478,6 +478,8 @@ def social_post_to_response(post: SocialPostDB) -> dict:
         "created_date": post.created_date.isoformat() if post.created_date else None,
         "is_published": post.is_published,
         "is_copied": getattr(post, "is_copied", False) or False,
+        "linkedin_post_id": getattr(post, "linkedin_post_id", None) or None,
+        "published_at": post.published_at.isoformat() if getattr(post, "published_at", None) else None,
     }
 
 

@@ -441,6 +441,16 @@ function App() {
     try { await fetchJson(`${API}/data/social-posts/${postId}/mark-copied`, { method: 'POST' }); await loadPosts() } catch {}
     showSuccess('Kopiert')
   }
+  const publishToLinkedIn = async (postId) => {
+    if (!confirm('Post jetzt auf LinkedIn als Harpocrates veröffentlichen?')) return
+    startLoading('Wird auf LinkedIn veröffentlicht...')
+    try {
+      const r = await fetchJson(`${API}/data/social-posts/${postId}/publish-linkedin`, { method: 'POST' })
+      showSuccess('Auf LinkedIn veröffentlicht!')
+      await loadPosts()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
   const exportCSV = (type) => window.open(`${API}/data/${type}/export`, '_blank')
 
   const renderPostContent = (text) => {
@@ -1641,8 +1651,13 @@ function App() {
                       {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
+                      {!p.is_published ? (
+                        <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Auf LinkedIn posten</button>
+                      ) : (
+                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
+                      )}
                       <button className="btn btn-ghost btn-sm" onClick={() => copyPost(p.id, p.content)}>{p.is_copied ? 'Erneut kopieren' : 'Kopieren'}</button>
-                      <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>
+                      {!p.is_published && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>}
                     </div>
                   </div>
                   <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
