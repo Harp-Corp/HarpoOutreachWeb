@@ -267,9 +267,17 @@ async def generate_social_post(
     if linkedin_context:
         previews.append(f"--- K\u00dcRZLICH AUF LINKEDIN VER\u00d6FFENTLICHT ---\n{linkedin_context}")
 
-    result = await pplx.generate_social_post(
-        topic_value, topic_prefix, sp.value, ind_list, previews, api_key
-    )
+    # Generate post with retry on meta-response
+    for gen_attempt in range(3):
+        try:
+            result = await pplx.generate_social_post(
+                topic_value, topic_prefix, sp.value, ind_list, previews, api_key
+            )
+            break  # Success
+        except ValueError as ve:
+            logger.warning(f"[GeneratePost] Attempt {gen_attempt+1} failed: {ve}")
+            if gen_attempt >= 2:
+                raise HTTPException(500, "Post-Generierung fehlgeschlagen (LLM liefert keine verwertbare Antwort).")
 
     # Add timestamp to the post content
     timestamp_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")

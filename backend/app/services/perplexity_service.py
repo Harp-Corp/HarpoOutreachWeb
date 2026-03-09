@@ -72,6 +72,20 @@ def _strip_markdown(text: str) -> str:
     return result
 
 
+def _is_meta_response(text: str) -> bool:
+    """Detect LLM meta-responses that are not actual post content.
+    E.g. 'I appreciate...', 'I cannot...', 'I'm unable...' etc."""
+    prefixes = (
+        "i appreciate", "i cannot", "i'm unable", "i am unable",
+        "i'm sorry", "i am sorry", "sorry,", "unfortunately,",
+        "i can't", "i don't", "i do not", "as an ai",
+        "i understand", "thank you for", "the core issue",
+        "the preamble", "this task", "i need to clarify",
+    )
+    first_line = text.strip().split("\n")[0].lower()[:100]
+    return any(first_line.startswith(p) for p in prefixes)
+
+
 def strip_trailing_hashtags(content: str) -> str:
     lines = content.split("\n")
     result: list[str] = []
@@ -1703,6 +1717,12 @@ Return ONLY valid JSON with content and hashtags."""
         if not isinstance(data, dict):
             data = {"content": raw}
         raw_content = data.get("content", raw)
+
+        # Reject LLM meta-responses ("I appreciate...", "I cannot...")
+        if _is_meta_response(raw_content):
+            logger.warning("[GeneratePost] LLM returned meta-response, retrying...")
+            raise ValueError("LLM returned meta-response instead of post content")
+
         hashtags = data.get("hashtags", [])
         hashtag_line = " ".join(
             h if h.startswith("#") else f"#{h}" for h in hashtags
@@ -1850,6 +1870,12 @@ Return ONLY valid JSON with content and hashtags."""
         if not isinstance(data, dict):
             data = {"content": raw}
         raw_content = data.get("content", raw)
+
+        # Reject LLM meta-responses ("I appreciate...", "I cannot...")
+        if _is_meta_response(raw_content):
+            logger.warning("[RegeneratePost] LLM returned meta-response, keeping original")
+            raise ValueError("LLM returned meta-response instead of post content")
+
         hashtags = data.get("hashtags", [])
         hashtag_line = " ".join(
             h if h.startswith("#") else f"#{h}" for h in hashtags
