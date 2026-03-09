@@ -1697,6 +1697,11 @@ Return ONLY valid JSON with content and hashtags."""
     cleaned = _clean_json(raw)
     try:
         data = json.loads(cleaned)
+        # Handle cases where the model returns a list instead of dict
+        if isinstance(data, list) and len(data) > 0:
+            data = data[0] if isinstance(data[0], dict) else {"content": raw}
+        if not isinstance(data, dict):
+            data = {"content": raw}
         raw_content = data.get("content", raw)
         hashtags = data.get("hashtags", [])
         hashtag_line = " ".join(
