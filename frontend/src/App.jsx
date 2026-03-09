@@ -26,6 +26,7 @@ function App() {
   const [abSearching, setAbSearching] = useState(false)
   const [analyticsExpanded, setAnalyticsExpanded] = useState({})
   const [checkingReplies, setCheckingReplies] = useState(false)
+  const [linkedinSettings, setLinkedinSettings] = useState({ org_id: '', has_token: false })
   const [replyCheckResult, setReplyCheckResult] = useState(null)
   const [loadingProgress, setLoadingProgress] = useState(null) // { current, total } for batch ops
   const [searchLeadsFilter, setSearchLeadsFilter] = useState('with_email') // 'all' | 'verified' | 'unverified'
@@ -123,10 +124,17 @@ function App() {
   const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
   const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch {} }, [])
   const loadAuthStatus = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {} }, [])
+  const loadLinkedinSettings = useCallback(async () => {
+    try {
+      const r = await fetchJson(`${API}/data/settings`)
+      const s = r.data || {}
+      setLinkedinSettings({ org_id: s.linkedin_org_id || '', has_token: !!(s.linkedin_access_token && s.linkedin_access_token !== '') })
+    } catch {}
+  }, [])
   const loadSeqCampaigns = useCallback(async () => { try { const r = await fetchJson(`${API}/campaigns/status`); setSeqCampaigns(r.data || []) } catch {} }, [])
   const loadSeqTemplates = useCallback(async () => { try { const r = await fetchJson(`${API}/campaigns/templates`); setSeqTemplates(r.data || []) } catch {} }, [])
 
-  useEffect(() => { loadDashboard(); loadAuthStatus() }, [loadDashboard, loadAuthStatus])
+  useEffect(() => { loadDashboard(); loadAuthStatus(); loadLinkedinSettings() }, [loadDashboard, loadAuthStatus, loadLinkedinSettings])
   useEffect(() => {
     setError(''); setSuccessMsg('')
     if (section === 'overview') { loadDashboard(); loadLeads(); loadAddressBook(); loadCompanies(); loadAnalyticsSummary() }
@@ -448,6 +456,23 @@ function App() {
       const r = await fetchJson(`${API}/data/social-posts/${postId}/publish-linkedin`, { method: 'POST' })
       showSuccess('Auf LinkedIn veröffentlicht!')
       await loadPosts()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+  const saveLinkedinSettings = async (e) => {
+    e.preventDefault()
+    const fd = new FormData(e.target)
+    const payload = {}
+    const token = fd.get('linkedin_access_token')
+    const orgId = fd.get('linkedin_org_id')
+    if (token && token.trim()) payload.linkedin_access_token = token.trim()
+    if (orgId !== undefined) payload.linkedin_org_id = (orgId || '').trim()
+    if (Object.keys(payload).length === 0) return
+    startLoading('LinkedIn-Einstellungen werden gespeichert...')
+    try {
+      await fetchJson(`${API}/data/settings`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      showSuccess('LinkedIn-Einstellungen gespeichert')
+      await loadLinkedinSettings()
     } catch (e) { setError(e.message) }
     stopLoading()
   }
@@ -1913,6 +1938,35 @@ function App() {
                 <div className="form-group"><label>E-Mail</label><input value="mf@harpocrates-corp.com" disabled style={{background:'#f9fafb'}} /></div>
               </div>
               <span className="sub">Absender-Konfiguration wird serverseitig verwaltet.</span>
+            </div>
+
+            <div className="card">
+              <h2>LinkedIn-Integration</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Zugangsdaten für die direkte Veröffentlichung auf der Harpocrates LinkedIn-Seite.</p>
+              {linkedinSettings.has_token
+                ? <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginBottom:'0.75rem'}}>
+                    <span style={{color:'#22c55e',fontSize:'1.1rem'}}>●</span>
+                    <span>Access Token hinterlegt</span>
+                    {linkedinSettings.org_id && <span className="badge badge-blue">Org: {linkedinSettings.org_id}</span>}
+                  </div>
+                : <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginBottom:'0.75rem'}}>
+                    <span style={{color:'#ef4444',fontSize:'1.1rem'}}>●</span>
+                    <span>Nicht konfiguriert — bitte Access Token eintragen</span>
+                  </div>}
+              <form onSubmit={saveLinkedinSettings}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0.75rem',maxWidth:'600px'}}>
+                  <div className="form-group">
+                    <label>Access Token</label>
+                    <input name="linkedin_access_token" type="password" placeholder={linkedinSettings.has_token ? '••••••• (gespeichert)' : 'Bearer Token einfügen'} />
+                  </div>
+                  <div className="form-group">
+                    <label>Organization ID</label>
+                    <input name="linkedin_org_id" defaultValue={linkedinSettings.org_id} placeholder="z.B. 42109305" />
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-primary btn-sm" style={{marginTop:'0.5rem'}} disabled={loading}>Speichern</button>
+              </form>
+              <p className="sub" style={{fontSize:'0.65rem',marginTop:'0.5rem'}}>Token über linkedin.com/developers/tools/oauth/token-generator generieren. Scopes: w_organization_social, r_organization_admin.</p>
             </div>
 
             <div className="card">
