@@ -1775,12 +1775,12 @@ function App() {
                           <div style={{display:'flex',alignItems:'center',gap:'0.75rem'}}>
                             <div style={{display:'flex',gap:'0.5rem',fontSize:'0.65rem',color:'#6b7280'}}>
                               <span>Fakten {claimsOk}/{claimsTotal}</span>
-                              <span>\u00b7</span>
+                              <span>·</span>
                               <span>URLs {urlsOk}/{urlsTotal}</span>
-                              <span>\u00b7</span>
-                              <span>Entit\u00e4ten {entOk}/{entTotal}</span>
+                              <span>·</span>
+                              <span>Entitäten {entOk}/{entTotal}</span>
                             </div>
-                            <span style={{fontSize:'0.6rem',color:'#9ca3af',transition:'transform 0.2s',transform:expanded?'rotate(180deg)':'rotate(0)'}}>\u25bc</span>
+                            <span style={{fontSize:'0.6rem',color:'#9ca3af',transition:'transform 0.2s',transform:expanded?'rotate(180deg)':'rotate(0)'}}>▼</span>
                           </div>
                         </div>
                         {/* Critical issues — shown if not postable */}
@@ -1788,7 +1788,7 @@ function App() {
                           <div style={{padding:'0.5rem 0.75rem',fontSize:'0.7rem',color:verdictColor,background:'#fff',borderTop:`1px solid ${verdictBorder}`}}>
                             <strong>Kritisch:</strong>{' '}
                             {claimsBad > 0 && <span>{claimsBad} falsche/ungenaue Behauptung{claimsBad>1?'en':''}</span>}
-                            {claimsBad > 0 && urlsBad > 0 && <span> \u00b7 </span>}
+                            {claimsBad > 0 && urlsBad > 0 && <span> · </span>}
                             {urlsBad > 0 && <span>{urlsBad} nicht erreichbare URL{urlsBad>1?'s':''}</span>}
                           </div>
                         )}
@@ -1831,7 +1831,7 @@ function App() {
                             {/* Entities */}
                             {v.entities && v.entities.length > 0 && (
                               <div>
-                                <div style={{fontWeight:600,marginBottom:'0.375rem',fontSize:'0.75rem',color:'#374151'}}>Entit\u00e4ten ({entOk}/{entTotal})</div>
+                                <div style={{fontWeight:600,marginBottom:'0.375rem',fontSize:'0.75rem',color:'#374151'}}>Entitäten ({entOk}/{entTotal})</div>
                                 <div style={{display:'flex',flexWrap:'wrap',gap:'0.25rem'}}>
                                   {v.entities.map((e, i) => (
                                     <span key={i} style={{display:'inline-flex',alignItems:'center',gap:'0.25rem',padding:'0.2rem 0.5rem',background:e.exists?'#f0fdf4':'#fef2f2',border:`1px solid ${e.exists?'#bbf7d0':'#fecaca'}`,borderRadius:'1rem',fontSize:'0.62rem',color:e.exists?'#166534':'#991b1b'}} title={e.details}>
