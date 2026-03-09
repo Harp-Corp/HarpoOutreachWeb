@@ -26,41 +26,67 @@ _linkedin_context_cache: str = ""
 _linkedin_cache_ts: float = 0.0
 
 async def _get_linkedin_context(api_key: str) -> str:
-    """Fetch recent Harpocrates LinkedIn posts via Perplexity to use as context.
-    Cached for 6 hours to avoid excessive API calls."""
+    """Fetch recent Harpocrates LinkedIn posts via Perplexity.
+    Uses Google-indexed LinkedIn post snippets (not direct LinkedIn access).
+    Cached for 6 hours to avoid excessive API calls.
+    
+    NOTE: Perplexity cannot directly access LinkedIn behind the login wall.
+    It searches Google-indexed snippets. Results may be incomplete.
+    The primary dedup mechanism is the local DB posts (see generate_social_post).
+    This function provides supplementary context from actually published posts."""
     import time
-    import logging
     global _linkedin_context_cache, _linkedin_cache_ts
 
     if _linkedin_context_cache and (time.time() - _linkedin_cache_ts) < 21600:
         return _linkedin_context_cache
 
-    logger = logging.getLogger("harpo.linkedin")
     try:
         from ..services.perplexity_service import _call_api, MODEL_FAST
-        system = """Du bist ein Social-Media-Analyst. Fasse die letzten LinkedIn-Posts des Unternehmens zusammen.
-Gib eine kurze Liste der Themen/Hooks/Kernaussagen (je 1 Zeile pro Post).
-Nur die letzten 15–20 Posts. Keine Wiederholung, nur Kernthemen."""
-        user = """Finde und fasse die letzten LinkedIn-Posts von Harpocrates Solutions GmbH zusammen.
-LinkedIn-Seite: https://www.linkedin.com/company/harpocrates/
-Gib für jeden Post eine Zeile mit dem Kernthema/Hook (max 100 Zeichen).
-Beispiel:
-- Digital Euro Pilot – ECB deadline Mai 2026
-- 9 Reports zu Compliance Automation
-- DORA Kosten €120K+ für Mittelstand"""
+        system = """You are a search assistant. Find REAL, ACTUALLY PUBLISHED LinkedIn posts from a specific company page.
+IMPORTANT:
+- Search Google for: site:linkedin.com/posts/harpocrates OR "Harpocrates" linkedin post
+- Only return posts that appear in ACTUAL search results with real URLs
+- Do NOT invent or hallucinate posts. If you can't find any, say "No posts found."
+- For each post found, give the first 1-2 sentences and the approximate date.
+- Return ONLY verified content from search results."""
+
+        user = """Find the most recent LinkedIn posts from Harpocrates / comply.reg.
+Search for: site:linkedin.com/posts/harpocrates
+Also search for: "Harpocrates" OR "comply.reg" site:linkedin.com
+
+List each found post as:
+- [date] First sentence or hook of the post
+
+Only include posts you can actually verify from search results. If no posts are found, say "No posts found." """
 
         result = await _call_api(
             system, user, api_key,
             max_tokens=1500,
             model=MODEL_FAST,
-            search_domain_filter=["linkedin.com"],
             search_recency_filter="month",
             search_context_size="high",
+            return_citations=True,
         )
-        raw = result if isinstance(result, str) else result.get("content", "")
-        _linkedin_context_cache = raw.strip()
-        _linkedin_cache_ts = time.time()
-        logger.info(f"LinkedIn context fetched: {len(_linkedin_context_cache)} chars")
+        if isinstance(result, dict):
+            raw = result.get("content", "")
+            citations = result.get("citations", [])
+            # Only trust the result if it has actual LinkedIn citations
+            has_linkedin_citations = any("linkedin.com" in c for c in citations)
+            if has_linkedin_citations:
+                _linkedin_context_cache = raw.strip()
+                _linkedin_cache_ts = time.time()
+                logger.info(f"LinkedIn context fetched ({len(citations)} citations): {len(_linkedin_context_cache)} chars")
+            else:
+                logger.info("LinkedIn context: no LinkedIn citations found, discarding (likely hallucinated)")
+                _linkedin_context_cache = ""
+        else:
+            raw = result if isinstance(result, str) else ""
+            if "no posts found" in raw.lower() or "nicht gefunden" in raw.lower():
+                _linkedin_context_cache = ""
+            else:
+                # Without citation verification, treat as unreliable
+                _linkedin_context_cache = ""
+                logger.info("LinkedIn context: no citation data, discarding")
     except Exception as e:
         logger.warning(f"Failed to fetch LinkedIn context: {e}")
 
@@ -227,7 +253,8 @@ async def generate_social_post(
     ind_list = [i.strip() for i in industries.split(",") if i.strip()] if industries else []
 
     existing_posts = db_svc.load_social_posts(db)
-    previews = [p.content[:80] for p in existing_posts[:10]]
+    # Use longer previews (200 chars) and more posts (20) for better dedup
+    previews = [p.content[:200] for p in existing_posts[:20]]
 
     # Fetch LinkedIn context (existing company page posts) for dedup + audience building
     linkedin_context = ""
