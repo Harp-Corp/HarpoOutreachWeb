@@ -138,6 +138,10 @@ class SocialPostDB(Base):
     publish_pending = Column(Boolean, nullable=False, default=False)  # Queued for publishing via Pipedream
     linkedin_post_id = Column(String, nullable=True)  # LinkedIn post URN after publishing
     published_at = Column(DateTime, nullable=True)  # When the post was published to LinkedIn
+    # ── Cross-check / fact verification ──
+    verification_status = Column(String, nullable=False, default="unverified")  # unverified / checking / verified / issues_found
+    verification_score = Column(Float, nullable=True)  # 0.0-1.0 overall accuracy score
+    verification_json = Column(Text, nullable=True)  # JSON: {claims: [{claim, verdict, source_url, details}], urls_checked: [{url, reachable, relevant}], entities: [{name, exists, details}], summary, checked_at}
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -216,6 +220,16 @@ def init_db():
                 conn.execute(text(
                     "ALTER TABLE social_posts ADD COLUMN publish_pending BOOLEAN NOT NULL DEFAULT false"
                 ))
+        # Cross-check verification columns
+        verification_migrations = [
+            ("verification_status", "ALTER TABLE social_posts ADD COLUMN verification_status VARCHAR NOT NULL DEFAULT 'unverified'"),
+            ("verification_score", "ALTER TABLE social_posts ADD COLUMN verification_score FLOAT"),
+            ("verification_json", "ALTER TABLE social_posts ADD COLUMN verification_json TEXT"),
+        ]
+        for col_name, sql in verification_migrations:
+            if col_name not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
     # Analytics-related columns on leads
     if "leads" in insp.get_table_names():
         lead_cols = [c["name"] for c in insp.get_columns("leads")]

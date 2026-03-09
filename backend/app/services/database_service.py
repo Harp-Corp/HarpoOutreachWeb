@@ -470,6 +470,14 @@ def social_post_to_response(post: SocialPostDB) -> dict:
         hashtags = json.loads(post.hashtags_json)
     except Exception:
         pass
+    # Parse verification JSON
+    verification = None
+    try:
+        vj = getattr(post, "verification_json", None)
+        if vj:
+            verification = json.loads(vj)
+    except Exception:
+        pass
     return {
         "id": str(post.id),
         "platform": post.platform,
@@ -481,6 +489,9 @@ def social_post_to_response(post: SocialPostDB) -> dict:
         "publish_pending": getattr(post, "publish_pending", False) or False,
         "linkedin_post_id": getattr(post, "linkedin_post_id", None) or None,
         "published_at": post.published_at.isoformat() if getattr(post, "published_at", None) else None,
+        "verification_status": getattr(post, "verification_status", "unverified") or "unverified",
+        "verification_score": getattr(post, "verification_score", None),
+        "verification": verification,
     }
 
 

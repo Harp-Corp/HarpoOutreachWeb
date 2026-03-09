@@ -1709,6 +1709,269 @@ Return ONLY valid JSON with content, hashtags, AND sources array."""
         return {"content": ensure_footer(fallback), "hashtags": []}
 
 
+# ─── 7b) Cross-Check / Fact-Verify a Social Post ────────────────
+
+async def cross_check_post(
+    post_content: str,
+    api_key: str,
+) -> dict:
+    """Multi-pass fact verification for a social media post.
+    
+    Runs 3 verification passes:
+    1) CLAIM EXTRACTION + VERIFICATION — extracts factual claims, verifies each against sources
+    2) URL REACHABILITY + RELEVANCE — checks every URL in the post
+    3) ENTITY VERIFICATION — checks that mentioned products, organisations, regulations exist
+    
+    Returns a structured verification result with score and details.
+    """
+    import re as _re
+    from datetime import datetime as _dt
+
+    logger.info("[CrossCheck] Starting multi-pass verification")
+
+    # ── Pass 1: Claim extraction + verification ──────────────────
+    system_claims = """You are a meticulous fact-checker for regulatory and compliance content.
+Your job: extract every FACTUAL CLAIM from the post, then verify each one.
+
+A factual claim is any statement that can be true or false, e.g.:
+- Dates ("On 5 March 2026, the ECB launched...")
+- Numbers/statistics ("PSD2 compliance costs rose 40%")
+- Deadlines ("selections by end of June 2026")
+- Regulatory requirements ("PSPs must demonstrate PSD2, GDPR and AML compliance")
+- Product/company references ("comply.reg helps PSPs map obligations")
+- Cause-effect claims ("this represents a compliance acceleration")
+
+For each claim:
+1. Search for the ORIGINAL SOURCE (ECB, EBA, ESMA, EU Commission, etc.)
+2. Compare the claim to what the source actually says
+3. Rate: "verified" (matches source), "inaccurate" (partially wrong or overstated), "unverifiable" (no source found), "false" (contradicted by source)
+4. Explain the difference if inaccurate
+
+CRITICAL: Do NOT trust the post's own citations. Verify independently.
+Return ONLY valid JSON."""
+
+    user_claims = f"""Fact-check this LinkedIn post. Extract EVERY factual claim and verify each one.
+
+POST CONTENT:
+{post_content}
+
+Return JSON:
+{{
+  "claims": [
+    {{
+      "claim": "the exact claim text from the post",
+      "verdict": "verified|inaccurate|unverifiable|false",
+      "source_url": "URL of the authoritative source used to verify (or empty)",
+      "source_name": "e.g. ECB Press Release, EBA Guidelines",
+      "details": "Explanation: what the source actually says vs what the post claims"
+    }}
+  ]
+}}"""
+
+    claims_result = []
+    try:
+        resp1 = await _call_api(
+            system_claims, user_claims, api_key,
+            max_tokens=4000,
+            model=MODEL_REASONING,
+            search_domain_filter=DOMAINS_REGULATORY + ["ft.com", "reuters.com", "handelsblatt.com"],
+            search_recency_filter="month",
+            search_language_filter=["en", "de"],
+            user_location=_eu_location(),
+            search_context_size="high",
+            return_citations=True,
+        )
+        raw1 = resp1 if isinstance(resp1, str) else resp1.get("content", "")
+        citations1 = resp1.get("citations", []) if isinstance(resp1, dict) else []
+        parsed1 = json.loads(_clean_json(raw1))
+        claims_result = parsed1.get("claims", [])
+        # Enrich source_url from Perplexity citations if empty
+        for i, claim in enumerate(claims_result):
+            if not claim.get("source_url") and citations1:
+                # Try to match by mentioned source name
+                for cit_url in citations1:
+                    sn = claim.get("source_name", "").lower()
+                    if sn and any(part in cit_url.lower() for part in sn.split() if len(part) > 3):
+                        claim["source_url"] = cit_url
+                        break
+        logger.info(f"[CrossCheck] Pass 1: {len(claims_result)} claims extracted")
+    except Exception as e:
+        logger.warning(f"[CrossCheck] Pass 1 failed: {e}")
+
+    # ── Pass 2: URL reachability + relevance ──────────────────────
+    urls_in_post = _re.findall(r'https?://[^\s)>"\]]+', post_content)
+    urls_checked = []
+    if urls_in_post:
+        system_urls = """You are a URL verification assistant.
+For each URL provided, determine:
+1. Is this a real, reachable URL? (Check if the domain exists and the path is plausible)
+2. Does the content at this URL support the context it's cited in?
+3. Is the URL still current (not outdated, moved, or broken)?
+
+Search for each URL or its content. If you can't access a URL directly, search for the page title or content.
+Return ONLY valid JSON."""
+
+        # Build context for each URL
+        url_contexts = []
+        for url in urls_in_post[:10]:  # max 10 URLs
+            # Find surrounding text in the post
+            idx = post_content.find(url)
+            start = max(0, idx - 100)
+            end = min(len(post_content), idx + len(url) + 100)
+            ctx = post_content[start:end].replace(url, "[THIS URL]")
+            url_contexts.append(f"URL: {url}\nContext: {ctx}")
+
+        user_urls = f"""Verify these URLs from a LinkedIn post. For each, check if it's real, reachable, and relevant to its context.
+
+{chr(10).join(url_contexts)}
+
+Return JSON:
+{{
+  "urls": [
+    {{
+      "url": "the URL",
+      "reachable": true/false,
+      "relevant": true/false,
+      "domain_exists": true/false,
+      "details": "explanation"
+    }}
+  ]
+}}"""
+
+        try:
+            resp2 = await _call_api(
+                system_urls, user_urls, api_key,
+                max_tokens=2000,
+                model=MODEL_FAST,
+                search_context_size="high",
+                return_citations=False,
+            )
+            raw2 = resp2 if isinstance(resp2, str) else resp2.get("content", "")
+            parsed2 = json.loads(_clean_json(raw2))
+            urls_checked = parsed2.get("urls", [])
+            logger.info(f"[CrossCheck] Pass 2: {len(urls_checked)} URLs checked")
+        except Exception as e:
+            logger.warning(f"[CrossCheck] Pass 2 failed: {e}")
+
+    # ── Pass 3: Entity verification ──────────────────────────────
+    system_entities = """You are an entity verification specialist for regulatory and fintech content.
+Extract all NAMED ENTITIES from the post (products, companies, regulations, institutions, programmes) and verify each exists.
+
+For each entity:
+- Is it a REAL product/company/regulation/programme? (not hallucinated)
+- If it's a product: does it actually do what the post claims?
+- If it's a regulation: is the name/acronym correct?
+- If it's a programme/initiative: does it actually exist with the described characteristics?
+
+Return ONLY valid JSON."""
+
+    user_entities = f"""Verify all named entities in this LinkedIn post:
+
+{post_content}
+
+Return JSON:
+{{
+  "entities": [
+    {{
+      "name": "entity name",
+      "type": "product|company|regulation|institution|programme",
+      "exists": true/false,
+      "details": "verification notes — what you found or didn't find"
+    }}
+  ]
+}}"""
+
+    entities_result = []
+    try:
+        resp3 = await _call_api(
+            system_entities, user_entities, api_key,
+            max_tokens=2000,
+            model=MODEL_FAST,
+            search_context_size="high",
+            search_language_filter=["en", "de"],
+            return_citations=False,
+        )
+        raw3 = resp3 if isinstance(resp3, str) else resp3.get("content", "")
+        parsed3 = json.loads(_clean_json(raw3))
+        entities_result = parsed3.get("entities", [])
+        logger.info(f"[CrossCheck] Pass 3: {len(entities_result)} entities checked")
+    except Exception as e:
+        logger.warning(f"[CrossCheck] Pass 3 failed: {e}")
+
+    # ── Scoring ──────────────────────────────────────────────────
+    total_checks = 0
+    passed_checks = 0
+
+    for c in claims_result:
+        total_checks += 1
+        v = c.get("verdict", "unverifiable").lower()
+        if v == "verified":
+            passed_checks += 1
+        elif v == "inaccurate":
+            passed_checks += 0.3  # partial credit
+
+    for u in urls_checked:
+        total_checks += 1
+        if u.get("reachable") and u.get("relevant"):
+            passed_checks += 1
+        elif u.get("reachable") or u.get("domain_exists"):
+            passed_checks += 0.3
+
+    for e in entities_result:
+        total_checks += 1
+        if e.get("exists"):
+            passed_checks += 1
+
+    score = round(passed_checks / total_checks, 2) if total_checks > 0 else 0.0
+
+    # Determine overall status
+    has_false = any(c.get("verdict", "").lower() == "false" for c in claims_result)
+    has_inaccurate = any(c.get("verdict", "").lower() == "inaccurate" for c in claims_result)
+    has_fake_entity = any(not e.get("exists") for e in entities_result)
+    has_broken_url = any(not u.get("reachable") for u in urls_checked)
+    has_irrelevant_url = any(not u.get("relevant") and u.get("reachable") for u in urls_checked)
+
+    issues = []
+    if has_false:
+        issues.append("Falsche Behauptungen gefunden")
+    if has_inaccurate:
+        issues.append("Ungenaue/übertriebene Aussagen")
+    if has_fake_entity:
+        issues.append("Nicht-existierende Entitäten referenziert")
+    if has_broken_url:
+        issues.append("Nicht erreichbare URLs")
+    if has_irrelevant_url:
+        issues.append("URLs ohne relevanten Inhalt")
+
+    status = "verified" if not issues else "issues_found"
+
+    # Build summary
+    summary_parts = []
+    verified_count = sum(1 for c in claims_result if c.get("verdict", "").lower() == "verified")
+    summary_parts.append(f"{verified_count}/{len(claims_result)} Fakten verifiziert")
+    reachable_count = sum(1 for u in urls_checked if u.get("reachable"))
+    summary_parts.append(f"{reachable_count}/{len(urls_checked)} URLs erreichbar")
+    existing_count = sum(1 for e in entities_result if e.get("exists"))
+    summary_parts.append(f"{existing_count}/{len(entities_result)} Entitäten bestätigt")
+    if issues:
+        summary_parts.append(f"Probleme: {'; '.join(issues)}")
+
+    result = {
+        "claims": claims_result,
+        "urls_checked": urls_checked,
+        "entities": entities_result,
+        "score": score,
+        "status": status,
+        "issues": issues,
+        "summary": " | ".join(summary_parts),
+        "checked_at": _dt.utcnow().isoformat(),
+        "passes_completed": 3,
+    }
+
+    logger.info(f"[CrossCheck] Done: score={score}, status={status}, issues={len(issues)}")
+    return result
+
+
 # ─── 8) Generate Subject Alternatives ───────────────────────────
 
 async def generate_subject_alternatives(

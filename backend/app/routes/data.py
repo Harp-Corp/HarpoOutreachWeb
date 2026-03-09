@@ -292,7 +292,63 @@ async def generate_social_post(
         "is_published": False,
     }
     obj = db_svc.save_social_post(db, post_data)
+
+    # Auto-run cross-check verification after generation
+    try:
+        from ..models.db import SocialPostDB
+        post_obj = db.query(SocialPostDB).filter(SocialPostDB.id == post_data["id"]).first()
+        if post_obj:
+            post_obj.verification_status = "checking"
+            db.commit()
+            verification = await pplx.cross_check_post(content_with_ts, api_key)
+            post_obj.verification_status = verification["status"]
+            post_obj.verification_score = verification["score"]
+            post_obj.verification_json = json.dumps(verification, ensure_ascii=False)
+            db.commit()
+            db.refresh(post_obj)
+            obj = post_obj
+            logger.info(f"Auto cross-check: score={verification['score']}, status={verification['status']}")
+    except Exception as e:
+        logger.warning(f"Auto cross-check failed (non-blocking): {e}")
+
     return {"success": True, "data": db_svc.social_post_to_response(obj)}
+
+
+@router.post("/social-posts/{post_id}/verify")
+async def verify_social_post(post_id: UUID, db: Session = Depends(get_db)):
+    """Run multi-pass cross-check verification on a social post.
+    Checks claims against sources, verifies URLs, validates entities."""
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+
+    api_key = db_svc.get_setting(db, "perplexity_api_key")
+    if not api_key:
+        raise HTTPException(400, "Perplexity API Key fehlt.")
+
+    # Mark as checking
+    post.verification_status = "checking"
+    db.commit()
+
+    try:
+        result = await pplx.cross_check_post(post.content, api_key)
+
+        post.verification_status = result["status"]
+        post.verification_score = result["score"]
+        post.verification_json = json.dumps(result, ensure_ascii=False)
+        db.commit()
+        db.refresh(post)
+
+        return {
+            "success": True,
+            "data": db_svc.social_post_to_response(post),
+        }
+    except Exception as e:
+        post.verification_status = "unverified"
+        db.commit()
+        logger.error(f"Cross-check failed for post {post_id}: {e}")
+        raise HTTPException(500, f"Cross-Check fehlgeschlagen: {str(e)}")
 
 
 @router.delete("/social-posts/{post_id}")

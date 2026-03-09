@@ -437,9 +437,28 @@ function App() {
   }
 
   const generatePost = async (topic, platform) => {
-    startLoading('Post wird generiert...'); setError('')
-    try { await fetchJson(`${API}/data/social-posts/generate?topic=${encodeURIComponent(topic)}&platform=${encodeURIComponent(platform)}`, { method: 'POST' }); showSuccess('Post generiert'); await loadPosts() }
-    catch (e) { setError(e.message) } stopLoading()
+    startLoading('Post wird generiert + Cross-Check l\u00e4uft...'); setError('')
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000)
+      const resp = await fetch(`${API}/data/social-posts/generate?topic=${encodeURIComponent(topic)}&platform=${encodeURIComponent(platform)}`, { method: 'POST', signal: controller.signal })
+      clearTimeout(timeout)
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Fehler ${resp.status}`) }
+      showSuccess('Post generiert und verifiziert'); await loadPosts()
+    } catch (e) {
+      if (e.name === 'AbortError') setError('Generierung hat zu lange gedauert. Bitte erneut versuchen.')
+      else setError(e.message)
+    } stopLoading()
+  }
+  const [verifyExpanded, setVerifyExpanded] = useState({})
+  const verifyPost = async (postId) => {
+    startLoading('Cross-Check l\u00e4uft (3 Pr\u00fcfungen)...'); setError('')
+    try {
+      await fetchJson(`${API}/data/social-posts/${postId}/verify`, { method: 'POST' }, 0)
+      showSuccess('Cross-Check abgeschlossen')
+      await loadPosts()
+    } catch (e) { setError(e.message) }
+    stopLoading()
   }
   const deletePost = async (postId) => {
     try { await fetchJson(`${API}/data/social-posts/${postId}`, { method: 'DELETE' }); await loadPosts() } catch (e) { setError(e.message) }
@@ -1682,23 +1701,93 @@ function App() {
               {posts.map(p => (
                 <div key={p.id} className={`post-item ${p.is_copied ? 'post-copied' : ''}`}>
                   <div className="post-header">
-                    <div style={{display:'flex',gap:'0.375rem',alignItems:'center'}}>
+                    <div style={{display:'flex',gap:'0.375rem',alignItems:'center',flexWrap:'wrap'}}>
                       <span className="badge badge-blue">LinkedIn</span>
                       {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
+                      {/* Verification badge */}
+                      {p.verification_status === 'verified' && <span className="badge badge-green" style={{fontSize:'0.55rem'}} title={`Score: ${Math.round((p.verification_score||0)*100)}%`}>✓ Verifiziert ({Math.round((p.verification_score||0)*100)}%)</span>}
+                      {p.verification_status === 'issues_found' && <span className="badge badge-red" style={{fontSize:'0.55rem',cursor:'pointer'}} title="Klicken f\u00fcr Details" onClick={() => setVerifyExpanded(prev => ({...prev, [p.id]: !prev[p.id]}))}>⚠ Probleme ({Math.round((p.verification_score||0)*100)}%)</span>}
+                      {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⏳ Pr\u00fcfung l\u00e4uft...</span>}
+                      {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungepr\u00fcft</span>}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
+                      {p.verification_status !== 'checking' && <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem'}} disabled={loading} onClick={() => verifyPost(p.id)}>{p.verification_status === 'unverified' ? '\ud83d\udd0d Pr\u00fcfen' : '\ud83d\udd04 Erneut pr\u00fcfen'}</button>}
                       {p.is_published ? (
-                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
+                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Ver\u00f6ffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
                       ) : p.publish_pending ? (
-                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange …</span>
+                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange \u2026</span>
                         <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem',color:'#ef4444'}} onClick={() => cancelPublish(p.id)}>Abbrechen</button></>
                       ) : (
                         <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Auf LinkedIn posten</button>
                       )}
                       <button className="btn btn-ghost btn-sm" onClick={() => copyPost(p.id, p.content)}>{p.is_copied ? 'Erneut kopieren' : 'Kopieren'}</button>
-                      {!p.is_published && !p.publish_pending && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>}
+                      {!p.is_published && !p.publish_pending && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>\u00d7</button>}
                     </div>
                   </div>
+                  {/* Verification details (expandable) */}
+                  {(verifyExpanded[p.id] || p.verification_status === 'issues_found') && p.verification && (
+                    <div style={{padding:'0.75rem',margin:'0.5rem 0',background:p.verification_status === 'verified' ? '#f0fdf4' : '#fef2f2',borderRadius:'0.5rem',border:`1px solid ${p.verification_status === 'verified' ? '#bbf7d0' : '#fecaca'}`,fontSize:'0.75rem'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
+                        <strong>Cross-Check Ergebnis</strong>
+                        <span style={{fontSize:'0.65rem',color:'#6b7280'}}>{p.verification.summary}</span>
+                      </div>
+                      {/* Claims */}
+                      {p.verification.claims && p.verification.claims.length > 0 && (
+                        <div style={{marginBottom:'0.5rem'}}>
+                          <div style={{fontWeight:600,marginBottom:'0.25rem'}}>Fakten-Check ({p.verification.claims.filter(c=>c.verdict==='verified').length}/{p.verification.claims.length})</div>
+                          {p.verification.claims.map((c, i) => (
+                            <div key={i} style={{padding:'0.375rem',marginBottom:'0.25rem',background:'#fff',borderRadius:'0.25rem',borderLeft:`3px solid ${c.verdict==='verified'?'#22c55e':c.verdict==='inaccurate'?'#f59e0b':c.verdict==='false'?'#ef4444':'#9ca3af'}`}}>
+                              <div style={{display:'flex',gap:'0.5rem',alignItems:'flex-start'}}>
+                                <span style={{flexShrink:0}}>{c.verdict==='verified'?'\u2705':c.verdict==='inaccurate'?'\u26a0\ufe0f':c.verdict==='false'?'\u274c':'\u2753'}</span>
+                                <div>
+                                  <div style={{fontStyle:'italic',color:'#374151'}}>\u201e{c.claim}\u201c</div>
+                                  <div style={{color:'#6b7280',marginTop:'0.125rem'}}>{c.details}</div>
+                                  {c.source_url && <a href={c.source_url} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',fontSize:'0.65rem'}}>{c.source_name || c.source_url}</a>}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {/* URLs */}
+                      {p.verification.urls_checked && p.verification.urls_checked.length > 0 && (
+                        <div style={{marginBottom:'0.5rem'}}>
+                          <div style={{fontWeight:600,marginBottom:'0.25rem'}}>URL-Check ({p.verification.urls_checked.filter(u=>u.reachable&&u.relevant).length}/{p.verification.urls_checked.length})</div>
+                          {p.verification.urls_checked.map((u, i) => (
+                            <div key={i} style={{padding:'0.25rem 0.375rem',display:'flex',gap:'0.5rem',alignItems:'center'}}>
+                              <span>{u.reachable && u.relevant ? '\u2705' : u.reachable ? '\u26a0\ufe0f' : '\u274c'}</span>
+                              <span style={{color:'#374151',wordBreak:'break-all',fontSize:'0.65rem'}}>{u.url}</span>
+                              <span style={{color:'#6b7280',fontSize:'0.6rem',flexShrink:0}}>{u.details}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {/* Entities */}
+                      {p.verification.entities && p.verification.entities.length > 0 && (
+                        <div>
+                          <div style={{fontWeight:600,marginBottom:'0.25rem'}}>Entit\u00e4ten ({p.verification.entities.filter(e=>e.exists).length}/{p.verification.entities.length})</div>
+                          {p.verification.entities.map((e, i) => (
+                            <div key={i} style={{padding:'0.25rem 0.375rem',display:'flex',gap:'0.5rem',alignItems:'center'}}>
+                              <span>{e.exists ? '\u2705' : '\u274c'}</span>
+                              <strong style={{fontSize:'0.7rem'}}>{e.name}</strong>
+                              <span className="badge badge-gray" style={{fontSize:'0.5rem'}}>{e.type}</span>
+                              <span style={{color:'#6b7280',fontSize:'0.6rem'}}>{e.details}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {p.verification.issues && p.verification.issues.length > 0 && (
+                        <div style={{marginTop:'0.5rem',padding:'0.375rem',background:'#fef3c7',borderRadius:'0.25rem',color:'#92400e',fontSize:'0.65rem'}}>
+                          <strong>Probleme:</strong> {p.verification.issues.join(' | ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {p.verification_status === 'verified' && !verifyExpanded[p.id] && p.verification && (
+                    <div style={{padding:'0.375rem 0.75rem',fontSize:'0.65rem',color:'#16a34a',cursor:'pointer'}} onClick={() => setVerifyExpanded(prev => ({...prev, [p.id]: true}))}>
+                      \u2713 {p.verification.summary} \u2014 <span style={{textDecoration:'underline'}}>Details anzeigen</span>
+                    </div>
+                  )}
                   <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
                 </div>
               ))}{posts.length === 0 && <p className="empty">Noch keine Posts. Wähle oben eine Kategorie und klicke "Generieren".</p>}
