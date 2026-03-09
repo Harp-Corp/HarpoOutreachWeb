@@ -310,13 +310,63 @@ async def mark_post_copied(post_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/social-posts/{post_id}/publish-linkedin")
 async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
-    """Publish a social post to LinkedIn.
-    Strategy: Try organization posting first (requires w_organization_social scope).
-    If that fails with 403, fall back to person posting (w_member_social scope).
-    Requires linkedin_access_token in settings. Also needs linkedin_org_id or linkedin_person_urn."""
-    import httpx
+    """Queue a social post for publishing to LinkedIn as Harpocrates organization.
+    Sets publish_pending=True. A background worker (cron) picks it up and posts
+    via the Pipedream LinkedIn connector which has w_organization_social scope."""
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+    if post.is_published:
+        raise HTTPException(400, "Post wurde bereits veröffentlicht.")
+    if getattr(post, "publish_pending", False):
+        raise HTTPException(400, "Post ist bereits in der Warteschlange.")
 
-    # Get the post
+    post.publish_pending = True
+    db.commit()
+    db.refresh(post)
+    logger.info(f"Post {post_id} queued for LinkedIn publishing")
+
+    return {
+        "success": True,
+        "queued": True,
+        "data": db_svc.social_post_to_response(post),
+    }
+
+
+@router.get("/social-posts/pending")
+async def get_pending_posts(db: Session = Depends(get_db)):
+    """Returns posts queued for LinkedIn publishing (publish_pending=True, is_published=False).
+    Used by the cron worker to pick up posts to publish."""
+    from ..models.db import SocialPostDB
+    posts = db.query(SocialPostDB).filter(
+        SocialPostDB.publish_pending == True,
+        SocialPostDB.is_published == False,
+    ).order_by(SocialPostDB.created_date.asc()).all()
+    return {"data": [db_svc.social_post_to_response(p) for p in posts]}
+
+
+@router.post("/social-posts/{post_id}/mark-published")
+async def mark_post_published(post_id: UUID, db: Session = Depends(get_db)):
+    """Mark a post as published after the cron worker successfully posted it via Pipedream."""
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+
+    post.is_published = True
+    post.publish_pending = False
+    post.published_at = datetime.utcnow()
+    db.commit()
+    db.refresh(post)
+    logger.info(f"Post {post_id} marked as published")
+
+    return {"success": True, "data": db_svc.social_post_to_response(post)}
+
+
+@router.post("/social-posts/{post_id}/cancel-publish")
+async def cancel_publish(post_id: UUID, db: Session = Depends(get_db)):
+    """Cancel a pending publish request."""
     from ..models.db import SocialPostDB
     post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
     if not post:
@@ -324,109 +374,10 @@ async def publish_to_linkedin(post_id: UUID, db: Session = Depends(get_db)):
     if post.is_published:
         raise HTTPException(400, "Post wurde bereits veröffentlicht.")
 
-    # Get LinkedIn credentials from settings
-    access_token = db_svc.get_setting(db, "linkedin_access_token")
-    org_id = db_svc.get_setting(db, "linkedin_org_id")
-    person_urn = db_svc.get_setting(db, "linkedin_person_urn")
-    if not access_token:
-        raise HTTPException(400, "LinkedIn Access Token fehlt. Bitte in den Einstellungen hinterlegen.")
-    if not org_id and not person_urn:
-        raise HTTPException(400, "LinkedIn Organization ID oder Person URN fehlt. Bitte in den Einstellungen hinterlegen.")
-
-    post_text = post.content
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "X-Restli-Protocol-Version": "2.0.0",
-        "LinkedIn-Version": "202501",
-        "Content-Type": "application/json",
-    }
-
-    def _build_payload(author_urn: str) -> dict:
-        return {
-            "author": author_urn,
-            "commentary": post_text,
-            "visibility": "PUBLIC",
-            "distribution": {
-                "feedDistribution": "MAIN_FEED",
-                "targetEntities": [],
-                "thirdPartyDistributionChannels": [],
-            },
-            "lifecycleState": "PUBLISHED",
-            "isReshareDisabledByAuthor": False,
-        }
-
-    async def _try_post(client: httpx.AsyncClient, author_urn: str):
-        payload = _build_payload(author_urn)
-        logger.info(f"LinkedIn: posting as {author_urn}")
-        resp = await client.post(
-            "https://api.linkedin.com/rest/posts",
-            json=payload,
-            headers=headers,
-        )
-        return resp
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Strategy: try org first, fall back to person
-            resp = None
-            used_author = None
-
-            if org_id:
-                org_urn = f"urn:li:organization:{org_id}"
-                resp = await _try_post(client, org_urn)
-                used_author = org_urn
-                # If org posting fails with 403 (no w_organization_social scope),
-                # fall back to person posting
-                if resp.status_code == 403 and person_urn:
-                    logger.info(f"LinkedIn: org posting denied, falling back to person {person_urn}")
-                    person_author = f"urn:li:person:{person_urn}"
-                    resp = await _try_post(client, person_author)
-                    used_author = person_author
-            elif person_urn:
-                person_author = f"urn:li:person:{person_urn}"
-                resp = await _try_post(client, person_author)
-                used_author = person_author
-
-        if resp is None:
-            raise HTTPException(400, "Keine LinkedIn-Identität konfiguriert.")
-
-        if resp.status_code == 201:
-            linkedin_post_id = resp.headers.get("x-restli-id", "")
-            logger.info(f"LinkedIn post published as {used_author}: {linkedin_post_id}")
-
-            post.is_published = True
-            post.linkedin_post_id = linkedin_post_id
-            post.published_at = datetime.utcnow()
-            db.commit()
-            db.refresh(post)
-
-            return {
-                "success": True,
-                "linkedin_post_id": linkedin_post_id,
-                "posted_as": used_author,
-                "data": db_svc.social_post_to_response(post),
-            }
-        elif resp.status_code == 401:
-            logger.error(f"LinkedIn auth failed: {resp.text}")
-            raise HTTPException(401, "LinkedIn Access Token ist abgelaufen oder ungültig. Bitte in den Einstellungen erneuern.")
-        elif resp.status_code == 403:
-            logger.error(f"LinkedIn permission denied: {resp.text}")
-            raise HTTPException(403, "Keine Berechtigung zum Posten. Prüfe die OAuth-Scopes (w_member_social / w_organization_social) und Admin-Rechte.")
-        elif resp.status_code == 426:
-            logger.error(f"LinkedIn API version error: {resp.text}")
-            raise HTTPException(502, f"LinkedIn API-Version nicht unterstützt. Bitte Backend aktualisieren. Detail: {resp.text[:200]}")
-        else:
-            logger.error(f"LinkedIn API error {resp.status_code}: {resp.text}")
-            raise HTTPException(502, f"LinkedIn API Fehler ({resp.status_code}): {resp.text[:200]}")
-
-    except httpx.TimeoutException:
-        raise HTTPException(504, "LinkedIn API Timeout. Bitte erneut versuchen.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"LinkedIn publish error: {e}")
-        raise HTTPException(500, f"Fehler beim Veröffentlichen: {str(e)}")
+    post.publish_pending = False
+    db.commit()
+    db.refresh(post)
+    return {"success": True, "data": db_svc.social_post_to_response(post)}
 
 
 # ─── Address Book ─────────────────────────────────────────────────

@@ -478,6 +478,7 @@ def social_post_to_response(post: SocialPostDB) -> dict:
         "created_date": post.created_date.isoformat() if post.created_date else None,
         "is_published": post.is_published,
         "is_copied": getattr(post, "is_copied", False) or False,
+        "publish_pending": getattr(post, "publish_pending", False) or False,
         "linkedin_post_id": getattr(post, "linkedin_post_id", None) or None,
         "published_at": post.published_at.isoformat() if getattr(post, "published_at", None) else None,
     }

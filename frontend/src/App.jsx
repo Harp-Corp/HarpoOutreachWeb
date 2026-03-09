@@ -450,11 +450,20 @@ function App() {
     showSuccess('Kopiert')
   }
   const publishToLinkedIn = async (postId) => {
-    if (!confirm('Post jetzt auf LinkedIn als Harpocrates veröffentlichen?')) return
-    startLoading('Wird auf LinkedIn veröffentlicht...')
+    if (!confirm('Post als Harpocrates Solutions auf LinkedIn ver\u00f6ffentlichen?')) return
+    startLoading('Post wird in die Warteschlange gestellt...')
     try {
       const r = await fetchJson(`${API}/data/social-posts/${postId}/publish-linkedin`, { method: 'POST' })
-      showSuccess('Auf LinkedIn veröffentlicht!')
+      showSuccess('Post in Warteschlange \u2014 wird in K\u00fcrze als Harpocrates ver\u00f6ffentlicht.')
+      await loadPosts()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+  const cancelPublish = async (postId) => {
+    startLoading('Wird abgebrochen...')
+    try {
+      await fetchJson(`${API}/data/social-posts/${postId}/cancel-publish`, { method: 'POST' })
+      showSuccess('Ver\u00f6ffentlichung abgebrochen.')
       await loadPosts()
     } catch (e) { setError(e.message) }
     stopLoading()
@@ -1678,13 +1687,16 @@ function App() {
                       {p.is_copied && <span className="badge badge-yellow">Kopiert</span>}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
-                      {!p.is_published ? (
-                        <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Auf LinkedIn posten</button>
-                      ) : (
+                      {p.is_published ? (
                         <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
+                      ) : p.publish_pending ? (
+                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange …</span>
+                        <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem',color:'#ef4444'}} onClick={() => cancelPublish(p.id)}>Abbrechen</button></>
+                      ) : (
+                        <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Auf LinkedIn posten</button>
                       )}
                       <button className="btn btn-ghost btn-sm" onClick={() => copyPost(p.id, p.content)}>{p.is_copied ? 'Erneut kopieren' : 'Kopieren'}</button>
-                      {!p.is_published && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>}
+                      {!p.is_published && !p.publish_pending && <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={() => deletePost(p.id)}>×</button>}
                     </div>
                   </div>
                   <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
