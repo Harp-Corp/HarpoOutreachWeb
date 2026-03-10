@@ -34,6 +34,11 @@ function App() {
   const [searchLeadsQuery, setSearchLeadsQuery] = useState('') // text filter for leads
   const [leadsGroupByCompany, setLeadsGroupByCompany] = useState(true) // group contacts by company
   const [leadsDisplayLimit, setLeadsDisplayLimit] = useState(50) // pagination: show N leads at a time
+  const [scoringLeads, setScoringLeads] = useState(false)
+  const [checkingBounces, setCheckingBounces] = useState(false)
+  const [checkingRepliesImap, setCheckingRepliesImap] = useState(false)
+  const [bounceCheckResult, setBounceCheckResult] = useState(null)
+  const [imapReplyResult, setImapReplyResult] = useState(null)
 
   // Campaign wizard state
   const [campStep, setCampStep] = useState(1) // 1=select, 2=draft+edit, 3=approve, 4=send
@@ -185,6 +190,80 @@ function App() {
     } catch (e) { setError(e.message) }
     setCheckingReplies(false)
   }
+  // ─── Score Leads ──────────────────────────────────────
+  const scoreAllLeads = async () => {
+    setScoringLeads(true); setError('')
+    try {
+      const r = await fetchJson(`${API}/prospecting/score-leads`, { method: 'POST' })
+      showSuccess(`${r.scored || 0} Leads bewertet`)
+      await loadLeads()
+    } catch (e) { setError(e.message) }
+    setScoringLeads(false)
+  }
+
+  // ─── IMAP Bounce Check ────────────────────────────────
+  const checkBouncesImap = async () => {
+    setCheckingBounces(true); setBounceCheckResult(null); setError('')
+    try {
+      const r = await fetchJson(`${API}/email/check-bounces`, { method: 'POST' })
+      setBounceCheckResult(r)
+      showSuccess(`Bounce-Check: ${r.bounces_found || 0} Bounces gefunden, ${r.leads_updated || 0} Leads aktualisiert`)
+      await loadSentEmails()
+      await loadAnalyticsSummary()
+    } catch (e) { setError(e.message) }
+    setCheckingBounces(false)
+  }
+
+  // ─── IMAP Reply Check (Hostinger) ─────────────────────
+  const checkRepliesImap = async () => {
+    setCheckingRepliesImap(true); setImapReplyResult(null); setError('')
+    try {
+      const r = await fetchJson(`${API}/email/check-replies-imap`, { method: 'POST' })
+      setImapReplyResult(r)
+      showSuccess(`IMAP-Prüfung: ${r.replies_found || 0} Antworten, ${r.auto_opt_outs || 0} Abmeldungen`)
+      await loadSentEmails()
+      await loadAnalyticsSummary()
+    } catch (e) { setError(e.message) }
+    setCheckingRepliesImap(false)
+  }
+
+  // ─── Send Follow-Up ───────────────────────────────────
+  const sendFollowUp = async (leadId) => {
+    if (!confirm('Follow-Up jetzt senden?')) return
+    startLoading('Follow-Up wird gesendet...'); setError('')
+    try {
+      await fetchJson(`${API}/email/send-follow-up/${leadId}`, { method: 'POST' })
+      showSuccess('Follow-Up gesendet')
+      await loadSentEmails()
+      await loadAnalyticsSummary()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  // ─── Send Campaign Step ───────────────────────────────
+  const sendCampaignStep = async (leadId, stepNum) => {
+    if (!confirm(`Schritt ${stepNum} jetzt senden?`)) return
+    startLoading(`Schritt ${stepNum} wird gesendet...`); setError('')
+    try {
+      const r = await fetchJson(`${API}/campaigns/send-step/${leadId}/${stepNum}`, { method: 'POST' })
+      showSuccess(`Schritt ${stepNum} (${r.type || ''}) gesendet`)
+      await loadSeqCampaigns()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
+  // ─── Send All Approved Campaign Steps ─────────────────
+  const sendApprovedSteps = async () => {
+    if (!confirm('Alle genehmigten Schritte jetzt senden?')) return
+    startLoading('Genehmigte Schritte werden gesendet...'); setError('')
+    try {
+      const r = await fetchJson(`${API}/campaigns/send-approved-steps`, { method: 'POST' })
+      showSuccess(`${r.sent || 0} gesendet${r.failed ? `, ${r.failed} fehlgeschlagen` : ''}${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
+      await loadSeqCampaigns()
+    } catch (e) { setError(e.message) }
+    stopLoading()
+  }
+
   const toggleAnalyticsRow = (id) => setAnalyticsExpanded(prev => ({ ...prev, [id]: !prev[id] }))
 
   // ─── Actions ────────────────────────────────────────────
@@ -790,9 +869,9 @@ function App() {
     if (!authStatus?.authenticated) { setError('Bitte zuerst mit Google verbinden.'); return }
 
     const count = campSendSelected.size
-    if (!confirm(`${count} E-Mail${count > 1 ? 's' : ''} jetzt senden?\n\nHinweis: Zwischen den E-Mails wird 30–90 Sekunden gewartet (Google API Rate Limit).`)) return
+    if (!confirm(`${count} E-Mail${count > 1 ? 's' : ''} jetzt senden?\n\nVersand über Hostinger SMTP (mf@harpocrates-corp.com).`)) return
 
-    startLoading(`${count} E-Mails werden gesendet (30–90s Pause zwischen Sendungen)...`); setError('')
+    startLoading(`${count} E-Mails werden gesendet...`); setError('')
     try {
       const r = await fetchJson(`${API}/email/send-batch`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1075,7 +1154,22 @@ function App() {
                     </div>
                     <div className="list">{companies.map(c => (
                       <div key={c.id} className="list-item">
-                        <div className="list-main"><strong>{c.name}</strong><span className="sub">{c.industry} · {c.country} · {c.employee_count?.toLocaleString()} MA</span></div>
+                        <div className="list-main">
+                          <strong>{c.name}</strong>
+                          <span className="sub">{c.industry} · {c.country} · {c.employee_count?.toLocaleString()} MA</span>
+                          {(c.compliance_score > 0 || c.key_regulations) && (
+                            <span className="sub" style={{display:'flex',alignItems:'center',gap:'0.375rem',flexWrap:'wrap'}}>
+                              {c.compliance_score > 0 && (
+                                <span className={`badge ${c.compliance_score >= 0.7 ? 'badge-green' : c.compliance_score >= 0.4 ? 'badge-yellow' : 'badge-gray'}`} style={{fontSize:'0.6rem'}} title={`Compliance-Relevanz: ${Math.round(c.compliance_score * 100)}%`}>
+                                  ⚖️ {Math.round(c.compliance_score * 100)}%
+                                </span>
+                              )}
+                              {c.key_regulations && c.key_regulations.split(',').map(r => r.trim()).filter(Boolean).map(reg => (
+                                <span key={reg} className="badge badge-blue" style={{fontSize:'0.55rem',padding:'1px 4px'}}>{reg}</span>
+                              ))}
+                            </span>
+                          )}
+                        </div>
                         <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => findContacts(c.id)}>Kontakte</button>
                       </div>
                     ))}{companies.length === 0 && <p className="empty">Keine Unternehmen.</p>}</div>
@@ -1086,6 +1180,7 @@ function App() {
                     <div className="card-header"><h2>Kontakte ({leads.length})</h2>
                       <div className="card-actions">
                         {leads.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('leads')}>CSV</button>}
+                        {leads.length > 0 && <button className={`btn btn-ghost btn-sm ${scoringLeads ? 'btn-loading' : ''}`} disabled={scoringLeads || loading} onClick={scoreAllLeads} title="Leads nach Relevanz bewerten">{scoringLeads ? '⚙️ Scoring...' : '⚙️ Score'}</button>}
                         {unverifiedLeads.length > 0 && <button className="btn btn-secondary" disabled={loading} onClick={verifyAllEmails}>Alle verifizieren ({unverifiedLeads.length})</button>}
                         {verifiedLeads.filter(l => !abEmails.has(l.email?.toLowerCase())).length > 0 && <button className="btn btn-primary btn-sm" disabled={loading} onClick={addAllVerifiedToAddressBook}>Alle ins Adressbuch ({verifiedLeads.filter(l => !abEmails.has(l.email?.toLowerCase())).length})</button>}
                       </div>
@@ -1121,12 +1216,13 @@ function App() {
                             {companyLeads.map(l => (
                               <div key={l.id} className="list-item" style={{paddingLeft:'0.5rem'}}>
                                 <div className="list-main">
-                                  <strong>{l.name}</strong>
+                                  <strong>{l.name}{l.lead_score > 0 && <span style={{fontSize:'0.65rem',fontWeight:400,marginLeft:'0.375rem',color:l.lead_score >= 0.7 ? '#22c55e' : l.lead_score >= 0.4 ? '#f59e0b' : '#9ca3af'}} title={l.lead_score_details || ''}>★ {Math.round(l.lead_score * 100)}%</span>}</strong>
                                   <span className="sub">{l.title}</span>
                                   <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}
                                     {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
                                     {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
                                     {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                                    {l.delivery_status === 'Bounced' && <span className="badge badge-red" style={{fontSize:'0.55rem',padding:'1px 4px'}}>Bounced</span>}
                                     {l.linkedin_url && <>{' '}<a href={l.linkedin_url} target="_blank" rel="noopener noreferrer" className="post-link" style={{fontSize:'0.6rem'}}>in</a></>}
                                   </span>
                                   {l.verification_notes && <span className="sub verify-notes" title={l.verification_notes}>📝 {l.verification_notes.split(' | ')[0]}</span>}
@@ -1147,12 +1243,13 @@ function App() {
                           {filteredLeads.slice(0, leadsDisplayLimit).map(l => (
                             <div key={l.id} className="list-item">
                               <div className="list-main">
-                                <strong>{l.name}</strong>
+                                <strong>{l.name}{l.lead_score > 0 && <span style={{fontSize:'0.65rem',fontWeight:400,marginLeft:'0.375rem',color:l.lead_score >= 0.7 ? '#22c55e' : l.lead_score >= 0.4 ? '#f59e0b' : '#9ca3af'}} title={l.lead_score_details || ''}>★ {Math.round(l.lead_score * 100)}%</span>}</strong>
                                 <span className="sub">{l.title} · {l.company}</span>
                                 <span className="sub">{l.email || '—'}{l.email_verified && <span className="verified">✓</span>}
                                   {l.email_risk_level && l.email_risk_level !== 'unknown' && <>{' '}{riskBadge(l.email_risk_level)}</>}
                                   {l.email_smtp_verified && <span className="verified" title="SMTP-verifiziert">⚡</span>}
                                   {l.email_is_catch_all && <span className="badge badge-yellow" style={{fontSize:'0.6rem',padding:'1px 4px'}} title="Catch-All-Domain">CA</span>}
+                                  {l.delivery_status === 'Bounced' && <span className="badge badge-red" style={{fontSize:'0.55rem',padding:'1px 4px'}}>Bounced</span>}
                                   {l.linkedin_url && <>{' '}<a href={l.linkedin_url} target="_blank" rel="noopener noreferrer" className="post-link" style={{fontSize:'0.6rem'}}>in</a></>}
                                 </span>
                                 {l.verification_notes && <span className="sub verify-notes" title={l.verification_notes}>📝 {l.verification_notes.split(' | ')[0]}</span>}
@@ -1556,7 +1653,7 @@ function App() {
                       </div>
                     )}
                     <p className="hint" style={{marginBottom:'0.75rem'}}>
-                      Wähle die E-Mails aus, die gesendet werden sollen. Zwischen Sendungen wird 30–90 Sekunden gewartet (Google API Rate Limit).
+                      Wähle die E-Mails aus, die gesendet werden sollen. Versand über Hostinger SMTP (mf@harpocrates-corp.com).
                     </p>
                     <div className="list">
                       {campLeads.filter(l => l.drafted_email?.is_approved).map(l => {
@@ -1602,6 +1699,7 @@ function App() {
                   <div className="card-header">
                     <h2>Multi-Touch-Sequenzen</h2>
                     <div className="card-actions">
+                      <button className="btn btn-primary btn-sm" disabled={loading} onClick={sendApprovedSteps}>Alle genehmigten senden</button>
                       <button className="btn btn-secondary btn-sm" disabled={loading} onClick={seqDraftAllNext}>Alle nächsten Schritte erstellen</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => { loadSeqCampaigns(); loadSeqTemplates() }}>Aktualisieren</button>
                     </div>
@@ -1666,6 +1764,9 @@ function App() {
                             <div style={{display:'flex',gap:'0.25rem',flexShrink:0}}>
                               {step.status === 'drafted' && (
                                 <button className="btn btn-primary btn-sm" style={{fontSize:'0.7rem',padding:'2px 6px'}} onClick={() => seqApproveStep(camp.lead_id, step.step)}>Freigeben</button>
+                              )}
+                              {step.status === 'approved' && (
+                                <button className="btn btn-primary btn-sm" style={{fontSize:'0.7rem',padding:'2px 6px',background:'#22c55e',borderColor:'#22c55e'}} disabled={loading} onClick={() => sendCampaignStep(camp.lead_id, step.step)}>✉ Senden</button>
                               )}
                               {step.status === 'pending' && !camp.is_paused && (
                                 <button className="btn btn-secondary btn-sm" style={{fontSize:'0.7rem',padding:'2px 6px'}} disabled={loading} onClick={() => seqDraftNext(camp.lead_id)}>Entwerfen</button>
@@ -1865,20 +1966,28 @@ function App() {
             <h1 className="page-title">Analytics</h1>
             <p className="page-desc">Übersicht aller versendeten E-Mails, Antworten und Kampagnen-Performance</p>
 
-            {/* Check Replies - prominent at top */}
+            {/* Check Replies & Bounces - prominent at top */}
             <div className="card" style={{background:'#f0f9ff',border:'1px solid #bae6fd'}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.75rem'}}>
                 <div>
-                  <h2 style={{margin:0,color:'#0c4a6e'}}>Gmail-Antworten prüfen</h2>
-                  <p className="sub" style={{margin:'0.25rem 0 0'}}>Durchsucht Gmail nach Antworten, Abmeldungen und Bounces</p>
+                  <h2 style={{margin:0,color:'#0c4a6e'}}>E-Mail-Prüfungen</h2>
+                  <p className="sub" style={{margin:'0.25rem 0 0'}}>Antworten, Bounces und Abmeldungen prüfen (Gmail + Hostinger IMAP)</p>
                 </div>
-                <button className="btn btn-primary btn-send" disabled={checkingReplies} onClick={checkReplies}>
-                  {checkingReplies ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.5rem'}} />Wird geprüft...</> : '📩 Antworten prüfen'}
-                </button>
+                <div style={{display:'flex',gap:'0.5rem',flexWrap:'wrap'}}>
+                  <button className="btn btn-primary btn-sm" disabled={checkingReplies} onClick={checkReplies}>
+                    {checkingReplies ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.375rem'}} />Prüfe...</> : '📩 Gmail-Antworten'}
+                  </button>
+                  <button className="btn btn-secondary btn-sm" disabled={checkingRepliesImap} onClick={checkRepliesImap}>
+                    {checkingRepliesImap ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.375rem'}} />Prüfe...</> : '📨 IMAP-Antworten'}
+                  </button>
+                  <button className="btn btn-secondary btn-sm" disabled={checkingBounces} onClick={checkBouncesImap}>
+                    {checkingBounces ? <><span className="spinner" style={{width:'14px',height:'14px',marginRight:'0.375rem'}} />Prüfe...</> : '⚠️ Bounce-Check'}
+                  </button>
+                </div>
               </div>
               {replyCheckResult && replyCheckResult.details && replyCheckResult.details.length > 0 && (
                 <div style={{marginTop:'1rem',padding:'0.75rem',background:'#fff',borderRadius:'0.5rem',border:'1px solid #bbf7d0'}}>
-                  <strong>Ergebnis:</strong>
+                  <strong>Gmail-Ergebnis:</strong>
                   <ul style={{margin:'0.5rem 0 0',paddingLeft:'1.25rem'}}>
                     {replyCheckResult.details.map((d, i) => (
                       <li key={i} style={{marginBottom:'0.25rem'}}>
@@ -1890,6 +1999,16 @@ function App() {
                       </li>
                     ))}
                   </ul>
+                </div>
+              )}
+              {bounceCheckResult && (
+                <div style={{marginTop:'0.75rem',padding:'0.75rem',background:'#fff',borderRadius:'0.5rem',border:`1px solid ${bounceCheckResult.bounces_found > 0 ? '#fecaca' : '#bbf7d0'}`}}>
+                  <strong>Bounce-Check:</strong> {bounceCheckResult.bounces_found || 0} Bounces gefunden, {bounceCheckResult.leads_updated || 0} Leads aktualisiert
+                </div>
+              )}
+              {imapReplyResult && (
+                <div style={{marginTop:'0.75rem',padding:'0.75rem',background:'#fff',borderRadius:'0.5rem',border:`1px solid ${imapReplyResult.replies_found > 0 ? '#bbf7d0' : '#e5e7eb'}`}}>
+                  <strong>IMAP-Check:</strong> {imapReplyResult.replies_found || 0} Antworten, {imapReplyResult.auto_opt_outs || 0} Abmeldungen
                 </div>
               )}
             </div>
@@ -2172,8 +2291,11 @@ function App() {
                           <div style={{background:em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#fffbeb' : '#f0fdf4',padding:'0.5rem 0.75rem',borderRadius:'0.375rem',border:`1px solid ${em.reply_received.startsWith('[UNSUBSCRIBE]') ? '#fde68a' : '#bbf7d0'}`,whiteSpace:'pre-wrap',fontSize:'0.85rem'}}>{em.reply_received}</div>
                         </div>
                       )}
-                      {/* Reset / Resend buttons */}
-                      <div style={{marginTop:'0.75rem',paddingTop:'0.75rem',borderTop:'1px solid #e5e7eb',display:'flex',justifyContent:'flex-end',gap:'0.5rem'}}>
+                      {/* Follow-Up / Reset / Resend buttons */}
+                      <div style={{marginTop:'0.75rem',paddingTop:'0.75rem',borderTop:'1px solid #e5e7eb',display:'flex',justifyContent:'flex-end',gap:'0.5rem',flexWrap:'wrap'}}>
+                        {em.follow_up_subject && !em.date_follow_up_sent && (
+                          <button className="btn btn-primary btn-sm" style={{fontSize:'0.75rem'}} disabled={loading} onClick={(e) => { e.stopPropagation(); sendFollowUp(em.id) }}>✉ Follow-Up senden</button>
+                        )}
                         <button className="btn btn-secondary btn-sm" style={{fontSize:'0.75rem'}} onClick={async (e) => {
                           e.stopPropagation()
                           if (!window.confirm(`E-Mail an ${em.name} erneut senden ermöglichen? Der bestehende Draft bleibt erhalten.`)) return
@@ -2208,7 +2330,7 @@ function App() {
 
             <div className="card">
               <h2>Google-Anbindung</h2>
-              <p className="sub" style={{marginBottom:'0.75rem'}}>Wird für den E-Mail-Versand und das Prüfen von Antworten benötigt.</p>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Wird für das Prüfen von Gmail-Antworten benötigt. E-Mail-Versand erfolgt über Hostinger SMTP.</p>
               {authStatus?.authenticated
                 ? <div style={{display:'flex',alignItems:'center',gap:'0.75rem',flexWrap:'wrap'}}>
                     <span style={{display:'flex',alignItems:'center',gap:'0.375rem'}}><span style={{color:'#22c55e',fontSize:'1.1rem'}}>●</span> Verbunden als <strong>{authStatus.email}</strong></span>
@@ -2221,13 +2343,17 @@ function App() {
             </div>
 
             <div className="card">
-              <h2>Absender</h2>
-              <p className="sub" style={{marginBottom:'0.75rem'}}>Informationen, die als Absender in E-Mails verwendet werden.</p>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0.75rem',maxWidth:'500px'}}>
+              <h2>Absender & SMTP</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>E-Mail-Versand über Hostinger SMTP</p>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'0.75rem',maxWidth:'700px'}}>
                 <div className="form-group"><label>Name</label><input value="Martin Foerster" disabled style={{background:'#f9fafb'}} /></div>
-                <div className="form-group"><label>E-Mail</label><input value="mf@harpocrates-corp.com" disabled style={{background:'#f9fafb'}} /></div>
+                <div className="form-group"><label>Absender</label><input value="mf@harpocrates-corp.com" disabled style={{background:'#f9fafb'}} /></div>
+                <div className="form-group"><label>Reply-To</label><input value="martin.foerster@gmail.com" disabled style={{background:'#f9fafb'}} /></div>
               </div>
-              <span className="sub">Absender-Konfiguration wird serverseitig verwaltet.</span>
+              <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginTop:'0.5rem'}}>
+                <span style={{color:'#22c55e',fontSize:'0.9rem'}}>●</span>
+                <span className="sub">Hostinger SMTP (smtp.hostinger.com:465/SSL) — Konfiguration serverseitig verwaltet</span>
+              </div>
             </div>
 
             <div className="card">
@@ -2277,7 +2403,7 @@ function App() {
             <div className="card">
               <h2>Info</h2>
               <div style={{display:'flex',flexDirection:'column',gap:'0.25rem',fontSize:'0.8125rem',color:'#6b7280'}}>
-                <span>Harpocrates Outreach — v2.0</span>
+                <span>Harpocrates Outreach — v2.1</span>
                 <span>Frontend: React (Vite) · Backend: FastAPI (Cloud Run)</span>
                 <span>KI-Recherche: Perplexity Sonar Pro</span>
               </div>
