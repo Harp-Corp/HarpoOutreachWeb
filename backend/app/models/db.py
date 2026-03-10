@@ -42,6 +42,8 @@ class CompanyDB(Base):
     country = Column(String, nullable=False, default="")
     nace_code = Column(String, nullable=False, default="")
     employee_count = Column(Integer, nullable=False, default=0)
+    compliance_score = Column(Float, nullable=False, default=0.0)  # 0.0–1.0 compliance relevance
+    key_regulations = Column(Text, nullable=False, default="")  # Comma-separated: DORA, NIS2, GDPR, etc.
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
@@ -88,6 +90,8 @@ class LeadDB(Base):
     campaign_current_step = Column(Integer, nullable=False, default=0)  # 0 = not started
     campaign_paused = Column(Boolean, nullable=False, default=False)
     last_reply_check = Column(DateTime, nullable=True)
+    lead_score = Column(Float, nullable=False, default=0.0)  # 0.0–1.0 outreach priority
+    lead_score_details = Column(Text, nullable=False, default="")  # JSON: scoring factors
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
@@ -251,9 +255,22 @@ def init_db():
             ("campaign_current_step", "ALTER TABLE leads ADD COLUMN campaign_current_step INTEGER NOT NULL DEFAULT 0"),
             ("campaign_paused", "ALTER TABLE leads ADD COLUMN campaign_paused BOOLEAN NOT NULL DEFAULT false"),
             ("last_reply_check", "ALTER TABLE leads ADD COLUMN last_reply_check TIMESTAMP"),
+            ("lead_score", "ALTER TABLE leads ADD COLUMN lead_score FLOAT NOT NULL DEFAULT 0.0"),
+            ("lead_score_details", "ALTER TABLE leads ADD COLUMN lead_score_details TEXT NOT NULL DEFAULT ''"),
         ]
         for col_name, sql in migrations:
             if col_name not in lead_cols:
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
+    # Company table: compliance scoring columns
+    if "companies" in insp.get_table_names():
+        comp_cols = [c["name"] for c in insp.get_columns("companies")]
+        comp_migrations = [
+            ("compliance_score", "ALTER TABLE companies ADD COLUMN compliance_score FLOAT NOT NULL DEFAULT 0.0"),
+            ("key_regulations", "ALTER TABLE companies ADD COLUMN key_regulations TEXT NOT NULL DEFAULT ''"),
+        ]
+        for col_name, sql in comp_migrations:
+            if col_name not in comp_cols:
                 with engine.begin() as conn:
                     conn.execute(text(sql))
 

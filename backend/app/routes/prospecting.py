@@ -713,3 +713,93 @@ async def verify_email_technical_only(
 
     return {"success": True, "data": result}
 
+
+
+# ─── Lead Scoring ─────────────────────────────────────────────────
+
+@router.post("/score-leads")
+async def score_leads(db: Session = Depends(get_db)):
+    """Compute outreach priority scores for all leads.
+    Score 0.0-1.0 based on:
+    - Title/seniority relevance (C-level compliance = high)
+    - Company compliance score (from company search)
+    - Email quality (verified, not catch-all)
+    - Pipeline stage (no draft yet = higher priority)
+    """
+    import json as _json
+    leads = db_svc.load_leads(db)
+    scored = 0
+
+    for lead in leads:
+        factors = {}
+        score = 0.0
+
+        # 1. Title relevance (0.0-0.3)
+        title_lower = (lead.title or "").lower()
+        compliance_titles = ["compliance", "regulatory", "risk", "legal", "governance",
+                           "datenschutz", "geldwäsche", "aml", "audit", "internal control"]
+        c_level = ["ceo", "cfo", "coo", "cto", "ciso", "cro", "chief", "geschäftsführer",
+                   "vorstand", "board", "managing director", "partner"]
+        vp_level = ["vp", "vice president", "director", "head of", "leiter", "bereichsleiter"]
+
+        if any(t in title_lower for t in compliance_titles):
+            factors["title_compliance"] = 0.25
+            score += 0.25
+        if any(t in title_lower for t in c_level):
+            factors["title_seniority"] = 0.10
+            score += 0.10
+        elif any(t in title_lower for t in vp_level):
+            factors["title_seniority"] = 0.05
+            score += 0.05
+
+        # 2. Company compliance score (0.0-0.3)
+        from ..models.db import CompanyDB
+        company = db.query(CompanyDB).filter(
+            CompanyDB.name.ilike(lead.company)
+        ).first()
+        if company:
+            comp_score = getattr(company, "compliance_score", 0.0) or 0.0
+            company_factor = comp_score * 0.3
+            factors["company_compliance"] = round(company_factor, 3)
+            score += company_factor
+
+        # 3. Email quality (0.0-0.2)
+        if lead.email:
+            if lead.email_verified:
+                factors["email_verified"] = 0.15
+                score += 0.15
+            elif lead.email_smtp_verified:
+                factors["email_smtp_ok"] = 0.10
+                score += 0.10
+            else:
+                factors["email_unverified"] = 0.05
+                score += 0.05
+            if lead.email_is_catch_all:
+                factors["catch_all_penalty"] = -0.05
+                score -= 0.05
+        else:
+            factors["no_email"] = 0.0
+
+        # 4. Pipeline stage bonus (0.0-0.2)
+        if not lead.drafted_email_json and not lead.date_email_sent:
+            factors["fresh_lead"] = 0.15
+            score += 0.15
+        elif lead.drafted_email_json and not lead.date_email_sent:
+            factors["has_draft"] = 0.05
+            score += 0.05
+
+        # 5. Penalty for opted-out or bounced
+        if lead.opted_out:
+            factors["opted_out"] = -1.0
+            score = 0.0
+        elif lead.delivery_status == "Bounced":
+            factors["bounced"] = -0.5
+            score = max(0.0, score - 0.5)
+
+        lead.lead_score = round(min(max(score, 0.0), 1.0), 3)
+        lead.lead_score_details = _json.dumps(factors)
+        lead.updated_at = datetime.utcnow()
+        scored += 1
+
+    db.commit()
+    return {"success": True, "scored": scored}

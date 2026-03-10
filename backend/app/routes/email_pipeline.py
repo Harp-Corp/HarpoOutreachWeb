@@ -919,6 +919,7 @@ async def check_replies_imap(db: Session = Depends(get_db)):
     )
 
     updated = 0
+    opt_outs = 0
     for reply in replies:
         lead_id = reply.get("lead_id")
         if not lead_id:
@@ -926,10 +927,27 @@ async def check_replies_imap(db: Session = Depends(get_db)):
         try:
             lead = db_svc.get_lead(db, UUID(lead_id))
             if lead and not lead.reply_received:
-                lead.reply_received = reply.get("body", "")[:2000]
+                reply_body = reply.get("body", "")[:2000]
+                reply_subject = reply.get("subject", "")
+                lead.reply_received = reply_body
                 lead.status = "Replied"
                 # Auto-pause campaign
                 lead.campaign_paused = True
+
+                # Auto-detect unsubscribe/opt-out in reply
+                combined_lower = (reply_body + " " + reply_subject).lower()
+                unsub_keywords = ["unsubscribe", "abmelden", "opt out", "opt-out",
+                                  "remove me", "stop emailing", "no interest",
+                                  "kein interesse", "nicht kontaktieren"]
+                if any(kw in combined_lower for kw in unsub_keywords):
+                    lead.opted_out = True
+                    lead.opt_out_date = datetime.utcnow()
+                    lead.status = "Do Not Contact"
+                    if lead.email:
+                        db_svc.add_to_blocklist(db, lead.email, reason=f"Opt-out via reply: {reply_subject[:80]}")
+                    opt_outs += 1
+                    _logger.info(f"Auto opt-out detected from {reply.get('from', '')} for lead {lead.name}")
+
                 lead.updated_at = datetime.utcnow()
                 db.commit()
                 updated += 1
@@ -937,7 +955,7 @@ async def check_replies_imap(db: Session = Depends(get_db)):
         except Exception as e:
             _logger.error(f"Failed to update reply for lead {lead_id}: {e}")
 
-    return {"success": True, "replies_found": len(replies), "leads_updated": updated}
+    return {"success": True, "replies_found": len(replies), "leads_updated": updated, "auto_opt_outs": opt_outs}
 
 
 # ─── Follow-Up Draft ─────────────────────────────────────────

@@ -725,6 +725,22 @@ Return JSON object with "companies" array."""
             logger.info(f"[FindCompanies] Skipping {name}: no employees and no website")
             continue
 
+        # Parse key_regulations and compute compliance_score
+        regs_raw = d.get("key_regulations", d.get("regulations", ""))
+        if isinstance(regs_raw, list):
+            regs_str = ", ".join(str(r) for r in regs_raw)
+        else:
+            regs_str = str(regs_raw) if regs_raw else ""
+
+        # Compliance score: count applicable major EU regulations
+        major_regs = ["DORA", "NIS2", "GDPR", "DSGVO", "MiCA", "CSRD", "EU AI Act",
+                      "MaRisk", "MiFID", "PSD2", "AMLD", "Solvency", "Basel", "CRD",
+                      "REACH", "EBA", "ESMA", "BaFin", "eIDAS", "CSDDD"]
+        regs_upper = regs_str.upper()
+        matched_regs = sum(1 for r in major_regs if r.upper() in regs_upper)
+        # Score: 0.0-1.0, scaled so 4+ regulations = 1.0
+        comp_score = min(matched_regs / 4.0, 1.0) if matched_regs > 0 else 0.1
+
         companies.append({
             "name": name,
             "industry": d.get("industry", industry_value),
@@ -736,6 +752,8 @@ Return JSON object with "companies" array."""
             "country": d.get("country", ""),
             "employee_count": emp,
             "nace_code": d.get("nace_code", ""),
+            "key_regulations": regs_str,
+            "compliance_score": round(comp_score, 2),
         })
 
     logger.info(f"[FindCompanies] Returning {len(companies)} companies for {industry_value}/{region_countries}")

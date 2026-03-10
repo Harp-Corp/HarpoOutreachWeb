@@ -346,6 +346,8 @@ def company_db_to_response(company: CompanyDB) -> dict:
         "country": company.country,
         "nace_code": company.nace_code,
         "employee_count": company.employee_count,
+        "compliance_score": getattr(company, "compliance_score", 0.0),
+        "key_regulations": getattr(company, "key_regulations", ""),
     }
 
 
