@@ -384,3 +384,169 @@ async def analytics_funnel(db: Session = Depends(get_db)):
             "conversions": conversions,
         }
     }
+
+
+# ─── LinkedIn Post Analytics ────────────────────────────────────
+
+@router.get("/linkedin-posts")
+async def linkedin_post_analytics(db: Session = Depends(get_db)):
+    """Get analytics for published LinkedIn posts.
+    Fetches engagement data (clicks, likes, comments, impressions, shares)
+    from LinkedIn organizationalEntityShareStatistics API."""
+    from ..models.db import SocialPostDB
+
+    # Get all published posts with linkedin_post_id
+    posts = db.query(SocialPostDB).filter(
+        SocialPostDB.is_published == True
+    ).order_by(SocialPostDB.published_at.desc()).all()
+
+    if not posts:
+        return {"data": [], "summary": {"total_posts": 0}}
+
+    org_id = db_svc.get_setting(db, "linkedin_org_id", "42109305")
+
+    # Try to get LinkedIn access token for API calls
+    # First check if we have a Pipedream-managed token in settings
+    li_token = db_svc.get_setting(db, "linkedin_access_token")
+
+    results = []
+    total_impressions = 0
+    total_clicks = 0
+    total_likes = 0
+    total_comments = 0
+    total_shares = 0
+
+    for post in posts:
+        post_data = {
+            "id": str(post.id),
+            "content": post.content[:150] + ("..." if len(post.content) > 150 else ""),
+            "published_at": post.published_at.isoformat() if post.published_at else None,
+            "linkedin_post_id": post.linkedin_post_id,
+            "stats": None,
+        }
+
+        # If we have a token AND a linkedin_post_id, fetch stats
+        if li_token and post.linkedin_post_id:
+            try:
+                stats = await _fetch_post_stats(org_id, post.linkedin_post_id, li_token)
+                if stats:
+                    post_data["stats"] = stats
+                    total_impressions += stats.get("impressionCount", 0)
+                    total_clicks += stats.get("clickCount", 0)
+                    total_likes += stats.get("likeCount", 0)
+                    total_comments += stats.get("commentCount", 0)
+                    total_shares += stats.get("shareCount", 0)
+            except Exception as e:
+                logger.warning(f"Failed to fetch LinkedIn stats for post {post.id}: {e}")
+
+        results.append(post_data)
+
+    return {
+        "data": results,
+        "summary": {
+            "total_posts": len(posts),
+            "posts_with_stats": sum(1 for r in results if r["stats"]),
+            "total_impressions": total_impressions,
+            "total_clicks": total_clicks,
+            "total_likes": total_likes,
+            "total_comments": total_comments,
+            "total_shares": total_shares,
+            "has_token": bool(li_token),
+        }
+    }
+
+
+async def _fetch_post_stats(org_id: str, linkedin_post_id: str, access_token: str) -> dict | None:
+    """Fetch statistics for a single LinkedIn post via organizationalEntityShareStatistics API."""
+    import httpx
+    import urllib.parse
+
+    org_urn = f"urn:li:organization:{org_id}"
+
+    # Determine if it's a share or ugcPost based on the URN format
+    if "ugcPost" in linkedin_post_id:
+        params = f"q=organizationalEntity&organizationalEntity={urllib.parse.quote(org_urn)}&ugcPosts[0]={urllib.parse.quote(linkedin_post_id)}"
+    elif "share" in linkedin_post_id:
+        params = f"q=organizationalEntity&organizationalEntity={urllib.parse.quote(org_urn)}&shares[0]={urllib.parse.quote(linkedin_post_id)}"
+    else:
+        # Try as share URN
+        share_urn = f"urn:li:share:{linkedin_post_id}" if not linkedin_post_id.startswith("urn:") else linkedin_post_id
+        params = f"q=organizationalEntity&organizationalEntity={urllib.parse.quote(org_urn)}&shares[0]={urllib.parse.quote(share_urn)}"
+
+    url = f"https://api.linkedin.com/rest/organizationalEntityShareStatistics?{params}"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url, headers={
+            "Authorization": f"Bearer {access_token}",
+            "LinkedIn-Version": "202602",
+            "X-Restli-Protocol-Version": "2.0.0",
+            "Content-Type": "application/json",
+        })
+
+    if resp.status_code != 200:
+        logger.warning(f"LinkedIn stats API returned {resp.status_code}: {resp.text[:200]}")
+        return None
+
+    data = resp.json()
+    elements = data.get("elements", [])
+    if not elements:
+        return None
+
+    stats = elements[0].get("totalShareStatistics", {})
+    return {
+        "clickCount": stats.get("clickCount", 0),
+        "likeCount": stats.get("likeCount", 0),
+        "commentCount": stats.get("commentCount", 0),
+        "shareCount": stats.get("shareCount", 0),
+        "impressionCount": stats.get("impressionCount", 0),
+        "engagement": stats.get("engagement", 0),
+        "uniqueImpressionsCount": stats.get("uniqueImpressionsCount", 0),
+    }
+
+
+@router.get("/linkedin-page")
+async def linkedin_page_analytics(db: Session = Depends(get_db)):
+    """Get LinkedIn organization page statistics (views, visitors)."""
+    import httpx
+    import urllib.parse
+
+    org_id = db_svc.get_setting(db, "linkedin_org_id", "42109305")
+    li_token = db_svc.get_setting(db, "linkedin_access_token")
+
+    if not li_token:
+        return {"data": None, "error": "Kein LinkedIn-Token vorhanden. Bitte in den Einstellungen verbinden."}
+
+    org_urn = f"urn:li:organization:{org_id}"
+    url = f"https://api.linkedin.com/rest/organizationPageStatistics?q=organization&organization={urllib.parse.quote(org_urn)}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers={
+                "Authorization": f"Bearer {li_token}",
+                "LinkedIn-Version": "202602",
+                "X-Restli-Protocol-Version": "2.0.0",
+                "Content-Type": "application/json",
+            })
+
+        if resp.status_code != 200:
+            return {"data": None, "error": f"LinkedIn API Fehler: {resp.status_code}"}
+
+        data = resp.json()
+        elements = data.get("elements", [])
+        if not elements:
+            return {"data": None, "error": "Keine Seitenstatistiken verfügbar."}
+
+        page_stats = elements[0].get("totalPageStatistics", {})
+        views = page_stats.get("views", {})
+
+        return {
+            "data": {
+                "total_page_views": views.get("allPageViews", {}).get("pageViews", 0),
+                "desktop_views": views.get("allDesktopPageViews", {}).get("pageViews", 0),
+                "mobile_views": views.get("allMobilePageViews", {}).get("pageViews", 0),
+                "overview_views": views.get("overviewPageViews", {}).get("pageViews", 0),
+            }
+        }
+    except Exception as e:
+        logger.error(f"LinkedIn page stats error: {e}")
+        return {"data": None, "error": str(e)}

@@ -10,8 +10,9 @@ from uuid import UUID, uuid4
 
 logger = logging.getLogger("harpo.data")
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..models.db import get_db
@@ -20,6 +21,16 @@ from ..services import perplexity_service as pplx
 from ..models.schemas import ContentTopic, SocialPlatform
 
 router = APIRouter(prefix="/data", tags=["Data"])
+
+
+# ─── Pydantic models ──────────────────────────────────────────────
+
+class MarkPublishedBody(BaseModel):
+    linkedin_post_id: str | None = None
+
+
+class UpdatePostContentBody(BaseModel):
+    content: str
 
 # ─── LinkedIn existing posts context (cached) ─────────────────────
 _linkedin_context_cache: str = ""
@@ -608,7 +619,7 @@ async def get_pending_posts(db: Session = Depends(get_db)):
 
 
 @router.post("/social-posts/{post_id}/mark-published")
-async def mark_post_published(post_id: UUID, db: Session = Depends(get_db)):
+async def mark_post_published(post_id: UUID, body: MarkPublishedBody = Body(default=MarkPublishedBody()), db: Session = Depends(get_db)):
     """Mark a post as published after the cron worker successfully posted it via Pipedream."""
     from ..models.db import SocialPostDB
     post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
@@ -618,10 +629,26 @@ async def mark_post_published(post_id: UUID, db: Session = Depends(get_db)):
     post.is_published = True
     post.publish_pending = False
     post.published_at = datetime.utcnow()
+    if body.linkedin_post_id:
+        post.linkedin_post_id = body.linkedin_post_id
     db.commit()
     db.refresh(post)
-    logger.info(f"Post {post_id} marked as published")
+    logger.info(f"Post {post_id} marked as published (linkedin_post_id={body.linkedin_post_id})")
 
+    return {"success": True, "data": db_svc.social_post_to_response(post)}
+
+
+@router.put("/social-posts/{post_id}")
+async def update_social_post_content(post_id: UUID, body: UpdatePostContentBody, db: Session = Depends(get_db)):
+    """Update social post content."""
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+    post.content = body.content
+    post.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(post)
     return {"success": True, "data": db_svc.social_post_to_response(post)}
 
 

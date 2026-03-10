@@ -13,6 +13,7 @@ function App() {
   const [sentEmails, setSentEmails] = useState([])
   const [analyticsSummary, setAnalyticsSummary] = useState(null)
   const [analyticsFunnel, setAnalyticsFunnel] = useState(null)
+  const [linkedinAnalytics, setLinkedinAnalytics] = useState(null)
   const [authStatus, setAuthStatus] = useState(null)
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
@@ -123,6 +124,7 @@ function App() {
   const loadSentEmails = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/sent-emails`); setSentEmails(r.data || []) } catch {} }, [])
   const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
   const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch {} }, [])
+  const loadLinkedinAnalytics = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/linkedin-posts`); setLinkedinAnalytics(r) } catch(e) { console.warn('LinkedIn analytics load failed:', e) } }, [])
   const loadAuthStatus = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {} }, [])
   const loadLinkedinSettings = useCallback(async () => {
     try {
@@ -142,7 +144,7 @@ function App() {
     else if (section === 'addressbook') { loadAddressBook(); loadLeads(); loadSentEmails() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts() }
-    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel() }
+    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
 
@@ -1990,6 +1992,70 @@ function App() {
                 )}
               </div>
             )}
+
+            {/* LinkedIn Post Analytics */}
+            <div className="card">
+              <h2>LinkedIn Post-Statistiken</h2>
+              {!linkedinAnalytics?.data?.length && !linkedinAnalytics?.summary?.has_token && (
+                <div className="empty-cta">
+                  <p style={{color:'#6b7280'}}>Noch keine veröffentlichten LinkedIn-Posts oder kein LinkedIn-Token konfiguriert.</p>
+                  <p className="sub">Nach der Veröffentlichung eines Posts werden hier Impressionen, Klicks, Likes und Kommentare angezeigt.</p>
+                </div>
+              )}
+              {linkedinAnalytics?.summary?.total_posts > 0 && (
+                <>
+                  <div className="stats-grid">
+                    <div className="stat-card"><div className="stat-val">{linkedinAnalytics.summary.total_posts}</div><div className="stat-lbl">Posts gesamt</div></div>
+                    <div className="stat-card" style={{borderColor:'#0a66c2'}}><div className="stat-val">{linkedinAnalytics.summary.total_impressions?.toLocaleString('de-DE') || 0}</div><div className="stat-lbl">Impressionen</div></div>
+                    <div className="stat-card" style={{borderColor:'#0a66c2'}}><div className="stat-val">{linkedinAnalytics.summary.total_clicks || 0}</div><div className="stat-lbl">Klicks</div></div>
+                    <div className="stat-card" style={{borderColor:'#22c55e'}}><div className="stat-val">{linkedinAnalytics.summary.total_likes || 0}</div><div className="stat-lbl">Likes</div></div>
+                    <div className="stat-card"><div className="stat-val">{linkedinAnalytics.summary.total_comments || 0}</div><div className="stat-lbl">Kommentare</div></div>
+                    <div className="stat-card"><div className="stat-val">{linkedinAnalytics.summary.total_shares || 0}</div><div className="stat-lbl">Shares</div></div>
+                  </div>
+                  {linkedinAnalytics.data?.length > 0 && (
+                    <div style={{marginTop:'1rem'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.85rem'}}>
+                        <thead>
+                          <tr style={{borderBottom:'2px solid #e5e7eb',textAlign:'left'}}>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600}}>Post</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Datum</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Impressionen</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Klicks</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Likes</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Kommentare</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Shares</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {linkedinAnalytics.data.map(p => (
+                            <tr key={p.id} style={{borderBottom:'1px solid #f3f4f6'}}>
+                              <td style={{padding:'0.5rem 0.5rem',maxWidth:'300px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.content}</td>
+                              <td style={{padding:'0.5rem',textAlign:'center',whiteSpace:'nowrap',color:'#6b7280'}}>{p.published_at?.split('T')[0] || '—'}</td>
+                              {p.stats ? (
+                                <>
+                                  <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.impressionCount?.toLocaleString('de-DE') || 0}</td>
+                                  <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.clickCount || 0}</td>
+                                  <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.likeCount || 0}</td>
+                                  <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.commentCount || 0}</td>
+                                  <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.shareCount || 0}</td>
+                                </>
+                              ) : (
+                                <td colSpan={5} style={{padding:'0.5rem',textAlign:'center',color:'#9ca3af',fontSize:'0.8rem'}}>{p.linkedin_post_id ? 'Statistiken werden geladen...' : 'Keine Post-ID'}</td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {!linkedinAnalytics.summary.has_token && linkedinAnalytics.summary.total_posts > 0 && (
+                    <div style={{marginTop:'0.75rem',padding:'0.5rem 0.75rem',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:'0.375rem',fontSize:'0.8rem',color:'#92400e'}}>
+                      Hinweis: Detaillierte Statistiken erfordern einen LinkedIn-Access-Token. Bitte in den Einstellungen konfigurieren.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
 
             {/* Sent Emails List */}
             <div className="card">
