@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     smtp_user: str = "mf@harpocrates-corp.com"
     smtp_password: str = ""
 
+    # IMAP (Hostinger) — used for bounce/reply checking
+    # Uses same credentials as SMTP
+    imap_host: str = "imap.hostinger.com"
+    imap_port: int = 993  # SSL
+
     # Google Sheets
     google_spreadsheet_id: str = ""
 

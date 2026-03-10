@@ -776,6 +776,170 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
     return result
 
 
+# ─── Send Follow-Up ───────────────────────────────────────────
+
+@router.post("/send-follow-up/{lead_id}")
+async def send_follow_up(lead_id: UUID, db: Session = Depends(get_db)):
+    """Send an approved follow-up email to a lead via Hostinger SMTP."""
+    lead = db_svc.get_lead(db, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead nicht gefunden.")
+    if not lead.follow_up_email_json:
+        raise HTTPException(400, "Kein Follow-Up-Entwurf vorhanden.")
+
+    fu = json.loads(lead.follow_up_email_json)
+    if not fu.get("is_approved"):
+        raise HTTPException(400, "Follow-Up muss erst genehmigt werden.")
+
+    # Blocklist check
+    if db_svc.is_blocked(db, lead.email):
+        lead.status = "Do Not Contact"
+        lead.opted_out = True
+        lead.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(400, f"{lead.email} steht auf der Opt-Out-Liste.")
+
+    sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
+    reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+
+    try:
+        send_result = await _send_via_smtp(
+            to=lead.email, from_addr=sender,
+            subject=fu["subject"], body=fu["body"],
+            db=db, reply_to=reply_to,
+        )
+    except Exception as e:
+        _logger.error(f"Follow-up send failed for {lead.email}: {e}")
+        lead.delivery_status = "Failed"
+        lead.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(500, f"Senden fehlgeschlagen: {str(e)}")
+
+    lead.date_follow_up_sent = datetime.utcnow()
+    fu["sent_date"] = datetime.utcnow().isoformat()
+    lead.follow_up_email_json = json.dumps(fu)
+    lead.status = "Follow-Up Sent"
+    lead.delivery_status = "Delivered"
+    lead.updated_at = datetime.utcnow()
+    db.commit()
+
+    _logger.info(f"Follow-up sent to {lead.email}, msg_id={send_result.get('msg_id')}")
+    return {"success": True, "message_id": send_result.get("msg_id")}
+
+
+# ─── Bounce Check (via Hostinger IMAP) ────────────────────────
+
+@router.post("/check-bounces")
+async def check_bounces(db: Session = Depends(get_db)):
+    """Check Hostinger IMAP for bounce-back messages and update lead delivery status."""
+    from ..services import imap_service as imap
+
+    smtp_cfg = _get_smtp_config(db)
+    # IMAP uses same credentials as SMTP
+    imap_host = "imap.hostinger.com"
+    imap_port = 993
+
+    # Build list of sent emails
+    leads = db_svc.load_leads(db)
+    sent_emails = []
+    for lead in leads:
+        if lead.date_email_sent and lead.email:
+            sent_emails.append({
+                "to": lead.email,
+                "subject": "",
+                "lead_id": str(lead.id),
+            })
+
+    if not sent_emails:
+        return {"success": True, "bounces_found": 0, "message": "Keine gesendeten E-Mails zum Pruefen."}
+
+    bounces = await asyncio.to_thread(
+        imap.check_bounces,
+        host=imap_host, port=imap_port,
+        user=smtp_cfg["smtp_user"], password=smtp_cfg["smtp_password"],
+        sent_emails=sent_emails, days_back=30,
+    )
+
+    updated = 0
+    for bounce in bounces:
+        lead_id = bounce.get("lead_id")
+        if not lead_id:
+            continue
+        try:
+            lead = db_svc.get_lead(db, UUID(lead_id))
+            if lead and lead.delivery_status != "Bounced":
+                lead.delivery_status = "Bounced"
+                bounce_type = bounce.get("bounce_type", "unknown")
+                # Hard bounces: add to blocklist
+                if bounce_type.startswith("hard_bounce"):
+                    db_svc.add_to_blocklist(db, lead.email, reason=f"Hard bounce: {bounce.get('details', '')[:100]}")
+                    lead.status = "Do Not Contact"
+                    lead.opted_out = True
+                    lead.campaign_paused = True
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                updated += 1
+                _logger.info(f"Bounce detected for {lead.email}: {bounce_type}")
+        except Exception as e:
+            _logger.error(f"Failed to update bounce for lead {lead_id}: {e}")
+
+    return {"success": True, "bounces_found": len(bounces), "leads_updated": updated}
+
+
+# ─── Reply Check (via Hostinger IMAP — fallback) ─────────────
+
+@router.post("/check-replies-imap")
+async def check_replies_imap(db: Session = Depends(get_db)):
+    """Check Hostinger IMAP for replies sent directly to mf@harpocrates-corp.com.
+    This is a fallback — primary reply checking uses Gmail API (Reply-To: gmail)."""
+    from ..services import imap_service as imap
+
+    smtp_cfg = _get_smtp_config(db)
+    imap_host = "imap.hostinger.com"
+    imap_port = 993
+
+    leads = db_svc.load_leads(db)
+    sent_emails = []
+    for lead in leads:
+        if lead.date_email_sent and lead.email:
+            sent_emails.append({
+                "to": lead.email,
+                "subject": "",
+                "lead_id": str(lead.id),
+            })
+
+    if not sent_emails:
+        return {"success": True, "replies_found": 0}
+
+    replies = await asyncio.to_thread(
+        imap.check_replies_imap,
+        host=imap_host, port=imap_port,
+        user=smtp_cfg["smtp_user"], password=smtp_cfg["smtp_password"],
+        sent_emails=sent_emails, days_back=30,
+    )
+
+    updated = 0
+    for reply in replies:
+        lead_id = reply.get("lead_id")
+        if not lead_id:
+            continue
+        try:
+            lead = db_svc.get_lead(db, UUID(lead_id))
+            if lead and not lead.reply_received:
+                lead.reply_received = reply.get("body", "")[:2000]
+                lead.status = "Replied"
+                # Auto-pause campaign
+                lead.campaign_paused = True
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                updated += 1
+                _logger.info(f"Reply detected from {reply.get('from', '')} for lead {lead.name}")
+        except Exception as e:
+            _logger.error(f"Failed to update reply for lead {lead_id}: {e}")
+
+    return {"success": True, "replies_found": len(replies), "leads_updated": updated}
+
+
 # ─── Follow-Up Draft ─────────────────────────────────────────
 
 @router.post("/draft-follow-up/{lead_id}")
