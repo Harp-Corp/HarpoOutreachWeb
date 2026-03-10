@@ -1063,10 +1063,12 @@ function App() {
                 <div className="stat-card"><div className="stat-val">{addressBook.length}</div><div className="stat-lbl">Adressbuch</div></div>
                 <div className="stat-card"><div className="stat-val">{stats.emails_sent || 0}</div><div className="stat-lbl">Gesendet</div></div>
                 <div className="stat-card" style={analyticsSummary?.total_replied > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{analyticsSummary?.total_replied || 0}</div><div className="stat-lbl">Antworten</div></div>
-                {analyticsSummary?.tracking_total_tracked > 0 && <>
+                {analyticsSummary?.tracking_total_tracked > 0 && (
                   <div className="stat-card" style={{borderColor:'#3b82f6'}}><div className="stat-val">{analyticsSummary.tracking_open_rate}%</div><div className="stat-lbl">Open-Rate</div></div>
+                )}
+                {analyticsSummary?.tracking_total_tracked > 0 && (
                   <div className="stat-card" style={{borderColor:'#8b5cf6'}}><div className="stat-val">{analyticsSummary.tracking_click_rate}%</div><div className="stat-lbl">Click-Rate</div></div>
-                </>}
+                )}
               </div>
               {/* Sender Pool Status */}
               {analyticsSummary?.pool_active_senders > 0 && (
