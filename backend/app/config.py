@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     sender_email: str = "mf@harpocrates-corp.com"
     reply_to_email: str = "martin.foerster@gmail.com"  # Reply-To: working inbox for responses
 
+    # SMTP (Hostinger) — used for sending outbound emails
+    # Ensures proper SPF/DKIM/DMARC alignment with harpocrates-corp.com
+    smtp_host: str = "smtp.hostinger.com"
+    smtp_port: int = 465  # SSL
+    smtp_user: str = "mf@harpocrates-corp.com"
+    smtp_password: str = ""
+
     # Google Sheets
     google_spreadsheet_id: str = ""
 

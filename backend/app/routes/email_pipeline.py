@@ -15,6 +15,7 @@ from ..models.db import CompanyDB, get_db
 from ..models.schemas import OutboundEmail
 from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
+from ..services import smtp_service as smtp
 from ..services import google_auth_service as gauth
 from ..config import settings
 from ..services import perplexity_service as pplx
@@ -103,6 +104,37 @@ def _get_access_token(db: Session) -> str:
             # Fall through to try with existing token
 
     return token
+
+
+# ─── SMTP Send Helper ─────────────────────────────────────────
+
+def _get_smtp_config(db: Session) -> dict:
+    """Get SMTP configuration from DB settings with fallback to env vars."""
+    return {
+        "smtp_host": db_svc.get_setting(db, "smtp_host") or settings.smtp_host,
+        "smtp_port": int(db_svc.get_setting(db, "smtp_port") or settings.smtp_port),
+        "smtp_user": db_svc.get_setting(db, "smtp_user") or settings.smtp_user,
+        "smtp_password": db_svc.get_setting(db, "smtp_password") or settings.smtp_password,
+    }
+
+
+async def _send_via_smtp(
+    to: str, from_addr: str, subject: str, body: str,
+    db: Session, reply_to: str | None = None,
+) -> dict:
+    """Send email via Hostinger SMTP. Runs SMTP in a thread to avoid blocking."""
+    smtp_cfg = _get_smtp_config(db)
+    if not smtp_cfg["smtp_password"]:
+        raise HTTPException(400, "SMTP-Passwort nicht konfiguriert. Bitte in den Einstellungen hinterlegen.")
+
+    import asyncio
+    return await asyncio.to_thread(
+        smtp.send_email,
+        to=to, from_addr=from_addr, subject=subject, body=body,
+        smtp_host=smtp_cfg["smtp_host"], smtp_port=smtp_cfg["smtp_port"],
+        smtp_user=smtp_cfg["smtp_user"], smtp_password=smtp_cfg["smtp_password"],
+        reply_to=reply_to,
+    )
 
 
 # ─── Pydantic models for request bodies ────────────────────────
@@ -498,8 +530,7 @@ async def reset_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
 
 @router.post("/send/{lead_id}")
 async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
-    """Send an approved email to a lead."""
-    access_token = _get_access_token(db)
+    """Send an approved email to a lead via Hostinger SMTP."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -527,27 +558,18 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
 
     reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
 
-    async def _try_send(token):
-        return await gmail.send_email(
+    try:
+        send_result = await _send_via_smtp(
             to=lead.email, from_addr=sender,
             subject=draft["subject"], body=draft["body"],
-            access_token=token, reply_to=reply_to,
+            db=db, reply_to=reply_to,
         )
-
-    try:
-        send_result = await _try_send(access_token)
-    except PermissionError:
-        # Token expired mid-request — refresh and retry once
-        _logger.warning(f"Gmail 401 for {lead.email}, refreshing token and retrying")
-        try:
-            access_token = _refresh_google_token(db)
-            send_result = await _try_send(access_token)
-        except Exception as retry_e:
-            _logger.error(f"Retry also failed for {lead.email}: {retry_e}")
-            lead.delivery_status = "Failed"
-            lead.updated_at = datetime.utcnow()
-            db.commit()
-            raise HTTPException(500, f"Senden fehlgeschlagen (auch nach Token-Refresh): {str(retry_e)}")
+    except PermissionError as e:
+        _logger.error(f"SMTP auth failed for {lead.email}: {e}")
+        lead.delivery_status = "Failed"
+        lead.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(500, f"SMTP-Authentifizierung fehlgeschlagen: {str(e)}")
     except Exception as e:
         _logger.error(f"Send failed for {lead.email}: {e}")
         lead.delivery_status = "Failed"
@@ -560,7 +582,7 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     lead.drafted_email_json = json.dumps(draft)
     lead.status = "Email Sent"
     lead.delivery_status = "Delivered"
-    lead.gmail_thread_id = send_result.get("thread_id", "")
+    lead.gmail_thread_id = send_result.get("msg_id", "")  # Store SMTP msg_id for tracking
     lead.updated_at = datetime.utcnow()
     db.commit()
     _logger.info(f"Email sent successfully to {lead.email}, msg_id={send_result.get('msg_id')}, thread_id={send_result.get('thread_id')}")
@@ -571,8 +593,7 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/send-all")
 async def send_all_approved(db: Session = Depends(get_db)):
-    """Send all approved emails (batch limited)."""
-    access_token = _get_access_token(db)
+    """Send all approved emails via SMTP (batch limited)."""
     batch_size = int(db_svc.get_setting(db, "batch_size", "10"))
 
     leads = db_svc.load_leads(db)
@@ -610,20 +631,17 @@ async def send_all_approved(db: Session = Depends(get_db)):
         reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
         _logger.info(f"[send-all] Sending to {lead.email} ({lead.name})")
         try:
-            send_result = await gmail.send_email(
-                to=lead.email,
-                from_addr=sender,
-                subject=draft["subject"],
-                body=draft["body"],
-                access_token=access_token,
-                reply_to=reply_to,
+            send_result = await _send_via_smtp(
+                to=lead.email, from_addr=sender,
+                subject=draft["subject"], body=draft["body"],
+                db=db, reply_to=reply_to,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
             lead.drafted_email_json = json.dumps(draft)
             lead.delivery_status = "Delivered"
-            lead.gmail_thread_id = send_result.get("thread_id", "")
+            lead.gmail_thread_id = send_result.get("msg_id", "")
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
@@ -632,30 +650,12 @@ async def send_all_approved(db: Session = Depends(get_db)):
             # Random delay 30-90s between sends
             if i < len(batch) - 1:
                 await asyncio.sleep(random.uniform(30, 90))
-        except PermissionError:
-            _logger.warning(f"[send-all] Gmail 401 for {lead.email}, refreshing token")
-            try:
-                access_token = _refresh_google_token(db)
-                send_result = await gmail.send_email(
-                    to=lead.email, from_addr=sender,
-                    subject=draft["subject"], body=draft["body"],
-                    access_token=access_token, reply_to=reply_to,
-                )
-                lead.status = "Email Sent"
-                lead.date_email_sent = datetime.utcnow()
-                draft["sent_date"] = datetime.utcnow().isoformat()
-                lead.drafted_email_json = json.dumps(draft)
-                lead.delivery_status = "Delivered"
-                lead.gmail_thread_id = send_result.get("thread_id", "")
-                lead.updated_at = datetime.utcnow()
-                db.commit()
-                sent += 1
-            except Exception as retry_e:
-                _logger.error(f"[send-all] Retry failed for {lead.email}: {retry_e}")
-                lead.delivery_status = "Failed"
-                lead.updated_at = datetime.utcnow()
-                db.commit()
-                failed += 1
+        except PermissionError as auth_e:
+            _logger.error(f"[send-all] SMTP auth failed for {lead.email}: {auth_e}")
+            lead.delivery_status = "Failed"
+            lead.updated_at = datetime.utcnow()
+            db.commit()
+            failed += 1
         except Exception as e:
             _logger.error(f"[send-all] Failed for {lead.email}: {e}")
             lead.delivery_status = "Failed"
@@ -678,9 +678,8 @@ async def send_all_approved(db: Session = Depends(get_db)):
 
 @router.post("/send-batch")
 async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
-    """Send approved emails for specific leads (campaign wizard step 4).
+    """Send approved emails for specific leads via SMTP (campaign wizard step 4).
     Respects rate limits: 30-90s random delay between sends."""
-    access_token = _get_access_token(db)
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
 
     _logger.info(f"send-batch called with {len(data.lead_ids)} lead IDs, sender={sender}")
@@ -734,20 +733,17 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
         _logger.info(f"Sending to {lead.email} ({lead.name} @ {lead.company}), subject='{draft.get('subject', '')[:60]}'")
 
         try:
-            send_result = await gmail.send_email(
-                to=lead.email,
-                from_addr=sender,
-                subject=draft["subject"],
-                body=draft["body"],
-                access_token=access_token,
-                reply_to=reply_to,
+            send_result = await _send_via_smtp(
+                to=lead.email, from_addr=sender,
+                subject=draft["subject"], body=draft["body"],
+                db=db, reply_to=reply_to,
             )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
             lead.drafted_email_json = json.dumps(draft)
             lead.delivery_status = "Delivered"
-            lead.gmail_thread_id = send_result.get("thread_id", "")
+            lead.gmail_thread_id = send_result.get("msg_id", "")
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
@@ -758,33 +754,13 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
                 delay = random.uniform(30, 90)
                 _logger.info(f"Rate limit delay: {delay:.0f}s before next send")
                 await asyncio.sleep(delay)
-        except PermissionError:
-            # Token expired — refresh and retry
-            _logger.warning(f"Gmail 401 for {lead.email}, refreshing token")
-            try:
-                access_token = _refresh_google_token(db)
-                send_result = await gmail.send_email(
-                    to=lead.email, from_addr=sender,
-                    subject=draft["subject"], body=draft["body"],
-                    access_token=access_token, reply_to=reply_to,
-                )
-                lead.status = "Email Sent"
-                lead.date_email_sent = datetime.utcnow()
-                draft["sent_date"] = datetime.utcnow().isoformat()
-                lead.drafted_email_json = json.dumps(draft)
-                lead.delivery_status = "Delivered"
-                lead.gmail_thread_id = send_result.get("thread_id", "")
-                lead.updated_at = datetime.utcnow()
-                db.commit()
-                sent += 1
-                _logger.info(f"Sent on retry to {lead.email}")
-            except Exception as retry_e:
-                _logger.error(f"Retry failed for {lead.email}: {retry_e}")
-                lead.delivery_status = "Failed"
-                lead.updated_at = datetime.utcnow()
-                db.commit()
-                failed += 1
-                errors.append(f"{lead.name}: {str(retry_e)[:100]}")
+        except PermissionError as auth_e:
+            _logger.error(f"SMTP auth failed for {lead.email}: {auth_e}")
+            lead.delivery_status = "Failed"
+            lead.updated_at = datetime.utcnow()
+            db.commit()
+            failed += 1
+            errors.append(f"{lead.name}: SMTP-Auth fehlgeschlagen")
         except Exception as e:
             _logger.error(f"Send failed for {lead.email}: {e}")
             lead.delivery_status = "Failed"
