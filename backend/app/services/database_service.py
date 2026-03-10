@@ -432,7 +432,7 @@ def save_social_post(db: Session, data: dict) -> SocialPostDB:
     post_id = data.get("id", uuid4())
     existing = db.get(SocialPostDB, post_id)
     if existing:
-        for k in ("platform", "content", "is_published", "is_copied", "linkedin_post_id", "published_at"):
+        for k in ("platform", "content", "is_published", "is_copied", "linkedin_post_id", "published_at", "scheduled_publish_date", "topic_category"):
             if k in data:
                 setattr(existing, k, data[k])
         if "hashtags" in data:
@@ -450,6 +450,8 @@ def save_social_post(db: Session, data: dict) -> SocialPostDB:
             created_date=data.get("created_date", datetime.utcnow()),
             is_published=data.get("is_published", False),
             is_copied=data.get("is_copied", False),
+            scheduled_publish_date=data.get("scheduled_publish_date"),
+            topic_category=data.get("topic_category"),
             updated_at=datetime.utcnow(),
         )
         db.add(obj)
@@ -497,6 +499,8 @@ def social_post_to_response(post: SocialPostDB) -> dict:
         "verification_status": getattr(post, "verification_status", "unverified") or "unverified",
         "verification_score": getattr(post, "verification_score", None),
         "verification": verification,
+        "scheduled_publish_date": post.scheduled_publish_date.isoformat() if getattr(post, "scheduled_publish_date", None) else None,
+        "topic_category": getattr(post, "topic_category", None) or None,
     }
 
 

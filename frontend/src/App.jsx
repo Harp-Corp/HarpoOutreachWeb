@@ -42,6 +42,11 @@ function App() {
   const [imapReplyResult, setImapReplyResult] = useState(null)
   const [activityLog, setActivityLog] = useState([])
 
+  // Content Calendar state
+  const [contentCalendar, setContentCalendar] = useState(null)
+  const [socialView, setSocialView] = useState('posts') // 'posts' | 'calendar'
+  const [generatingWeekly, setGeneratingWeekly] = useState(false)
+
   // Campaign wizard state
   const [campStep, setCampStep] = useState(1) // 1=select, 2=draft+edit, 3=approve, 4=send
   const [campSelected, setCampSelected] = useState(new Set()) // selected address book entry IDs
@@ -127,6 +132,7 @@ function App() {
   const loadCompanies = useCallback(async () => { try { const r = await fetchJson(`${API}/data/companies`); setCompanies(r.data || []) } catch {} }, [])
   const loadLeads = useCallback(async () => { try { const r = await fetchJson(`${API}/data/leads`); setLeads(r.data || []) } catch {} }, [])
   const loadPosts = useCallback(async () => { try { const r = await fetchJson(`${API}/data/social-posts`); setPosts(r.data || []) } catch {} }, [])
+  const loadContentCalendar = useCallback(async () => { try { const r = await fetchJson(`${API}/data/content-calendar`); setContentCalendar(r) } catch {} }, [])
   const loadAddressBook = useCallback(async () => { try { const r = await fetchJson(`${API}/data/address-book`); setAddressBook(r.data || []) } catch {} }, [])
   const loadSentEmails = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/sent-emails`); setSentEmails(r.data || []) } catch {} }, [])
   const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
@@ -151,7 +157,7 @@ function App() {
     else if (section === 'search') { loadCompanies(); loadLeads() }
     else if (section === 'addressbook') { loadAddressBook(); loadLeads(); loadSentEmails() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
-    else if (section === 'social') { loadPosts() }
+    else if (section === 'social') { loadPosts(); loadContentCalendar() }
     else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics(); loadPosts(); loadActivityLog() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
@@ -518,6 +524,35 @@ function App() {
       await loadAddressBook()
     } catch (e) { setError(e.message) }
     stopLoading()
+  }
+
+  const generateWeeklyPosts = async () => {
+    setGeneratingWeekly(true)
+    startLoading('2 Posts f\u00fcr die Woche werden generiert + Cross-Check (kann bis zu 5 Min. dauern)...')
+    setError('')
+    try {
+      const tueTopic = document.getElementById('tueTopic')?.value || 'Regulatory Update'
+      const friTopic = document.getElementById('friTopic')?.value || 'Compliance Tip'
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 8 * 60 * 1000)
+      const resp = await fetch(`${API}/data/social-posts/generate-weekly`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tuesday_topic: tueTopic, friday_topic: friTopic, week_offset: 0 }),
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Fehler ${resp.status}`) }
+      const data = await resp.json()
+      showSuccess(`${data.generated} Posts generiert und geplant`)
+      await loadPosts()
+      await loadContentCalendar()
+    } catch (e) {
+      if (e.name === 'AbortError') setError('Generierung hat zu lange gedauert.')
+      else setError(e.message)
+    }
+    stopLoading()
+    setGeneratingWeekly(false)
   }
 
   const generatePost = async (topic, platform) => {
@@ -1820,6 +1855,108 @@ function App() {
         {section === 'social' && (
           <div key="social">
             <h1 className="page-title">LinkedIn</h1>
+            {/* Tab navigation: Posts | Kalender | Woche generieren */}
+            <div style={{display:'flex',gap:'0.25rem',marginBottom:'1rem',borderBottom:'2px solid #e5e7eb',paddingBottom:'0'}}>
+              {[{id:'posts',label:'Posts'},{id:'calendar',label:'Content-Kalender'},{id:'weekly',label:'Woche generieren'}].map(t => (
+                <button key={t.id} style={{padding:'0.5rem 1rem',background:socialView===t.id?'#1e293b':'transparent',color:socialView===t.id?'#fff':'#6b7280',border:'none',borderRadius:'0.5rem 0.5rem 0 0',fontWeight:socialView===t.id?600:400,fontSize:'0.8rem',cursor:'pointer',transition:'all 0.15s'}} onClick={()=>setSocialView(t.id)}>{t.label}</button>
+              ))}
+            </div>
+
+            {/* ── Weekly Generator ── */}
+            {socialView === 'weekly' && (
+              <div className="card">
+                <h2>Woche planen</h2>
+                <p style={{color:'#6b7280',fontSize:'0.8rem',marginBottom:'1rem'}}>Generiert 2 Posts: einen f\u00fcr Dienstag, einen f\u00fcr Freitag. Beide m\u00fcssen vor Ver\u00f6ffentlichung freigegeben werden.</p>
+                <div style={{display:'flex',gap:'1rem',flexWrap:'wrap',marginBottom:'1rem'}}>
+                  <div className="form-group" style={{flex:1,minWidth:'200px'}}>
+                    <label>Dienstag-Post: Kategorie</label>
+                    <select id="tueTopic">
+                      <option value="Regulatory Update">Regulatory Update</option>
+                      <option value="Compliance Tip">Compliance Tip</option>
+                      <option value="Industry Insight">Industry Insight</option>
+                      <option value="Product Feature">Product Feature</option>
+                      <option value="Thought Leadership">Thought Leadership</option>
+                      <option value="Case Study">Case Study</option>
+                    </select>
+                  </div>
+                  <div className="form-group" style={{flex:1,minWidth:'200px'}}>
+                    <label>Freitag-Post: Kategorie</label>
+                    <select id="friTopic">
+                      <option value="Compliance Tip">Compliance Tip</option>
+                      <option value="Regulatory Update">Regulatory Update</option>
+                      <option value="Industry Insight">Industry Insight</option>
+                      <option value="Product Feature">Product Feature</option>
+                      <option value="Thought Leadership">Thought Leadership</option>
+                      <option value="Case Study">Case Study</option>
+                    </select>
+                  </div>
+                </div>
+                <button className="btn btn-primary" disabled={loading || generatingWeekly} onClick={generateWeeklyPosts}>
+                  {generatingWeekly ? 'Wird generiert...' : 'N\u00e4chste Woche generieren'}
+                </button>
+              </div>
+            )}
+
+            {/* ── Content Calendar ── */}
+            {socialView === 'calendar' && (
+              <div className="card">
+                <h2>Content-Kalender</h2>
+                {!contentCalendar ? <p className="empty">Lade...</p> : (
+                  <div>
+                    <h3 style={{fontSize:'0.85rem',fontWeight:600,marginBottom:'0.75rem',color:'#374151'}}>Geplant ({contentCalendar.total_scheduled})</h3>
+                    {contentCalendar.upcoming?.length === 0 && <p className="empty">Keine geplanten Posts. Nutze "Woche generieren" um Posts zu planen.</p>}
+                    {contentCalendar.upcoming?.map(p => {
+                      const schedDate = p.scheduled_publish_date ? new Date(p.scheduled_publish_date) : null
+                      const dayName = schedDate ? schedDate.toLocaleDateString('de-DE', { weekday: 'long' }) : ''
+                      const dateStr = schedDate ? schedDate.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''
+                      const s = Math.round((p.verification_score||0)*100)
+                      const noFalse = !p.verification?.claims?.some(c=>c.verdict==='false')
+                      const isPostable = s >= 90 && noFalse
+                      return (
+                        <div key={p.id} style={{padding:'0.75rem',marginBottom:'0.5rem',border:'1px solid #e5e7eb',borderRadius:'0.5rem',borderLeft:`4px solid ${isPostable ? '#22c55e' : p.verification_status === 'unverified' ? '#9ca3af' : '#ef4444'}`}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
+                            <div style={{display:'flex',gap:'0.5rem',alignItems:'center'}}>
+                              <span style={{fontWeight:600,fontSize:'0.8rem',color:'#1e293b'}}>{dayName} {dateStr}</span>
+                              {p.topic_category && <span className="badge badge-blue" style={{fontSize:'0.55rem'}}>{p.topic_category}</span>}
+                              {isPostable && <span className="badge badge-green" style={{fontSize:'0.55rem'}}>Postbar ({s}%)</span>}
+                              {p.verification_status !== 'unverified' && !isPostable && <span className="badge badge-red" style={{fontSize:'0.55rem'}}>Nicht postbar ({s}%)</span>}
+                              {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungepr\u00fcft</span>}
+                            </div>
+                            <div style={{display:'flex',gap:'0.375rem'}}>
+                              {!p.is_published && !p.publish_pending && isPostable && (
+                                <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Freigeben + Posten</button>
+                              )}
+                              {p.publish_pending && <span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>In Warteschlange</span>}
+                              {p.is_published && <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Ver\u00f6ffentlicht</span>}
+                            </div>
+                          </div>
+                          <div style={{fontSize:'0.75rem',color:'#374151',whiteSpace:'pre-wrap',maxHeight:'120px',overflow:'hidden',textOverflow:'ellipsis'}}>{p.content?.substring(0, 300)}{p.content?.length > 300 ? '...' : ''}</div>
+                        </div>
+                      )
+                    })}
+                    {contentCalendar.past?.length > 0 && (
+                      <div style={{marginTop:'1.5rem'}}>
+                        <h3 style={{fontSize:'0.85rem',fontWeight:600,marginBottom:'0.75rem',color:'#6b7280'}}>Vergangene geplante Posts</h3>
+                        {contentCalendar.past.map(p => {
+                          const schedDate = p.scheduled_publish_date ? new Date(p.scheduled_publish_date) : null
+                          const dateStr = schedDate ? schedDate.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) : ''
+                          return (
+                            <div key={p.id} style={{padding:'0.5rem',marginBottom:'0.25rem',borderRadius:'0.375rem',background:'#f9fafb',fontSize:'0.72rem',color:'#6b7280',display:'flex',gap:'0.5rem',alignItems:'center'}}>
+                              <span style={{fontWeight:500,minWidth:'50px'}}>{dateStr}</span>
+                              <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.content?.substring(0, 100)}</span>
+                              {p.is_published ? <span className="badge badge-green" style={{fontSize:'0.5rem'}}>Ver\u00f6ffentlicht</span> : <span className="badge badge-gray" style={{fontSize:'0.5rem'}}>Nicht ver\u00f6ffentlicht</span>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Single Post Generator (original) ── */}
+            {socialView === 'posts' && (
             <div className="card">
               <h2>Post generieren</h2>
               <div style={{display:'flex',gap:'0.5rem',alignItems:'end',flexWrap:'wrap'}}>
@@ -1835,7 +1972,7 @@ function App() {
                   </select>
                 </div>
                 <div className="form-group" style={{flex:1,minWidth:'200px'}}><label>Eigenes Thema (optional)</label>
-                  <input id="postCustomTopic" placeholder="z.B. DORA Deadline März 2026, Digital Euro Update, NIS2..." onFocus={() => { document.getElementById('postTopic').value = '__custom__' }} />
+                  <input id="postCustomTopic" placeholder="z.B. DORA Deadline M\u00e4rz 2026, Digital Euro Update, NIS2..." onFocus={() => { document.getElementById('postTopic').value = '__custom__' }} />
                 </div>
                 <button className="btn btn-primary" disabled={loading} onClick={() => {
                   const sel = document.getElementById('postTopic').value
@@ -1845,6 +1982,8 @@ function App() {
                 }}>Generieren</button>
               </div>
             </div>
+            )}
+            {socialView === 'posts' && (
             <div className="card"><h2>Posts ({posts.length})</h2>
               {posts.map(p => (
                 <div key={p.id} className={`post-item ${p.is_copied ? 'post-copied' : ''}`}>
@@ -1861,6 +2000,11 @@ function App() {
                       })()}
                       {p.verification_status === 'checking' && <span className="badge badge-yellow" style={{fontSize:'0.55rem'}}>⏳ Prüfung läuft...</span>}
                       {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungeprüft</span>}
+                      {p.scheduled_publish_date && !p.is_published && (
+                        <span className="badge" style={{fontSize:'0.55rem',background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe'}}>
+                          Geplant: {new Date(p.scheduled_publish_date).toLocaleDateString('de-DE', {weekday:'short',day:'2-digit',month:'2-digit'})}
+                        </span>
+                      )}
                     </div>
                     <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
                       {p.verification_status !== 'checking' && <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem'}} disabled={loading} onClick={() => verifyPost(p.id)}>{p.verification_status === 'unverified' ? '🔍 Prüfen' : '🔄 Erneut prüfen'}</button>}
@@ -1990,6 +2134,7 @@ function App() {
                 </div>
               ))}{posts.length === 0 && <p className="empty">Noch keine Posts. Wähle oben eine Kategorie und klicke "Generieren".</p>}
             </div>
+            )}
           </div>
         )}
 

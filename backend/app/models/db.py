@@ -142,6 +142,9 @@ class SocialPostDB(Base):
     publish_pending = Column(Boolean, nullable=False, default=False)  # Queued for publishing via Pipedream
     linkedin_post_id = Column(String, nullable=True)  # LinkedIn post URN after publishing
     published_at = Column(DateTime, nullable=True)  # When the post was published to LinkedIn
+    # ── Content Calendar ──
+    scheduled_publish_date = Column(DateTime, nullable=True)  # When this post should be published (e.g. Tue or Fri)
+    topic_category = Column(String, nullable=True)  # ContentTopic value used to generate this post
     # ── Cross-check / fact verification ──
     verification_status = Column(String, nullable=False, default="unverified")  # unverified / checking / verified / issues_found
     verification_score = Column(Float, nullable=True)  # 0.0-1.0 overall accuracy score
@@ -224,6 +227,15 @@ def init_db():
                 conn.execute(text(
                     "ALTER TABLE social_posts ADD COLUMN publish_pending BOOLEAN NOT NULL DEFAULT false"
                 ))
+        # Content Calendar columns
+        calendar_migrations = [
+            ("scheduled_publish_date", "ALTER TABLE social_posts ADD COLUMN scheduled_publish_date TIMESTAMP"),
+            ("topic_category", "ALTER TABLE social_posts ADD COLUMN topic_category VARCHAR"),
+        ]
+        for col_name, sql in calendar_migrations:
+            if col_name not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
         # Cross-check verification columns
         verification_migrations = [
             ("verification_status", "ALTER TABLE social_posts ADD COLUMN verification_status VARCHAR NOT NULL DEFAULT 'unverified'"),

@@ -668,6 +668,246 @@ async def cancel_publish(post_id: UUID, db: Session = Depends(get_db)):
     return {"success": True, "data": db_svc.social_post_to_response(post)}
 
 
+# ─── Content Calendar ───────────────────────────────────────────
+
+@router.get("/content-calendar")
+async def get_content_calendar(db: Session = Depends(get_db)):
+    """Return upcoming scheduled posts as a calendar view.
+    Shows posts with scheduled_publish_date in the future, grouped by week."""
+    from ..models.db import SocialPostDB
+    from datetime import timedelta
+    now = datetime.utcnow()
+    posts = db.query(SocialPostDB).filter(
+        SocialPostDB.scheduled_publish_date.isnot(None),
+    ).order_by(SocialPostDB.scheduled_publish_date.asc()).all()
+
+    upcoming = []
+    past = []
+    for p in posts:
+        entry = db_svc.social_post_to_response(p)
+        if p.scheduled_publish_date and p.scheduled_publish_date > now:
+            upcoming.append(entry)
+        else:
+            past.append(entry)
+
+    return {
+        "upcoming": upcoming,
+        "past": past[-20:],  # last 20 past scheduled posts
+        "total_scheduled": len(upcoming),
+    }
+
+
+@router.post("/social-posts/{post_id}/schedule")
+async def schedule_post(post_id: UUID, body: dict = Body(...), db: Session = Depends(get_db)):
+    """Set or update the scheduled publish date for a post.
+    Body: {"scheduled_publish_date": "2026-03-13T09:00:00"}"""
+    from ..models.db import SocialPostDB
+    post = db.query(SocialPostDB).filter(SocialPostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Post nicht gefunden.")
+    date_str = body.get("scheduled_publish_date")
+    if date_str:
+        try:
+            post.scheduled_publish_date = datetime.fromisoformat(date_str.replace("Z", "+00:00").replace("+00:00", ""))
+        except ValueError:
+            raise HTTPException(400, "Ungültiges Datumsformat. Erwartet: ISO 8601.")
+    else:
+        post.scheduled_publish_date = None
+    db.commit()
+    db.refresh(post)
+    return {"success": True, "data": db_svc.social_post_to_response(post)}
+
+
+class WeeklyGenerateBody(BaseModel):
+    tuesday_topic: str = "Regulatory Update"
+    friday_topic: str = "Compliance Tip"
+    week_offset: int = 0  # 0 = this coming week, 1 = next week, etc.
+
+
+@router.post("/social-posts/generate-weekly")
+async def generate_weekly_posts(
+    body: WeeklyGenerateBody = Body(default=WeeklyGenerateBody()),
+    db: Session = Depends(get_db),
+):
+    """Generate 2 posts for the upcoming week:
+    - Post 1: scheduled for Tuesday 09:00 CET
+    - Post 2: scheduled for Friday 09:00 CET
+    Both posts are generated, cross-checked, and auto-regenerated if needed.
+    They are NOT auto-published — user must approve/publish manually."""
+    from datetime import timedelta
+    import pytz
+
+    api_key = db_svc.get_setting(db, "perplexity_api_key")
+    if not api_key:
+        raise HTTPException(400, "Perplexity API Key fehlt.")
+
+    # Calculate next Tuesday and Friday (CET)
+    cet = pytz.timezone("Europe/Berlin")
+    now_cet = datetime.now(cet)
+    # Find next Monday (start of target week)
+    days_until_monday = (7 - now_cet.weekday()) % 7
+    if days_until_monday == 0 and now_cet.weekday() != 0:
+        days_until_monday = 7
+    next_monday = now_cet + timedelta(days=days_until_monday + (body.week_offset * 7))
+    tue_date = (next_monday + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    fri_date = (next_monday + timedelta(days=4)).replace(hour=9, minute=0, second=0, microsecond=0)
+
+    # Convert to UTC for storage
+    tue_utc = tue_date.astimezone(pytz.UTC).replace(tzinfo=None)
+    fri_utc = fri_date.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    results = []
+    topics_and_dates = [
+        (body.tuesday_topic, tue_utc, tue_date.strftime("%A %d.%m.%Y")),
+        (body.friday_topic, fri_utc, fri_date.strftime("%A %d.%m.%Y")),
+    ]
+
+    for topic_str, sched_date, date_label in topics_and_dates:
+        # Resolve topic
+        topic_value = topic_str
+        topic_prefix = ""
+        try:
+            ct = ContentTopic(topic_str)
+            topic_value = ct.value
+            topic_prefix = ct.prompt_prefix
+        except ValueError:
+            topic_value = topic_str.strip()
+            topic_prefix = f"Write an expert analysis about {topic_value} and its impact on"
+
+        sp = SocialPlatform.linkedin
+        existing_posts = db_svc.load_social_posts(db)
+        previews = [p.content[:200] for p in existing_posts[:20]]
+
+        linkedin_context = ""
+        try:
+            linkedin_context = await _get_linkedin_context(api_key)
+        except Exception:
+            pass
+        if linkedin_context:
+            previews.append(f"--- K\u00dcRZLICH AUF LINKEDIN VER\u00d6FFENTLICHT ---\n{linkedin_context}")
+
+        # Generate with retry
+        result = None
+        for gen_attempt in range(3):
+            try:
+                result = await pplx.generate_social_post(
+                    topic_value, topic_prefix, sp.value, [], previews, api_key
+                )
+                break
+            except ValueError as ve:
+                logger.warning(f"[WeeklyGen] Attempt {gen_attempt+1} for {date_label}: {ve}")
+                if gen_attempt >= 2:
+                    raise HTTPException(500, f"Post-Generierung für {date_label} fehlgeschlagen.")
+
+        # Add timestamp
+        timestamp_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+        content_with_ts = result["content"]
+        if "\U0001f517 www.harpocrates-corp.com" in content_with_ts:
+            content_with_ts = content_with_ts.replace(
+                "\U0001f517 www.harpocrates-corp.com",
+                f"\n\n\U0001f4c5 {timestamp_str}\n\n\U0001f517 www.harpocrates-corp.com",
+            )
+        else:
+            content_with_ts += f"\n\n\U0001f4c5 {timestamp_str}"
+
+        post_data = {
+            "id": uuid4(),
+            "platform": sp.value,
+            "content": content_with_ts,
+            "hashtags": result["hashtags"],
+            "created_date": datetime.utcnow(),
+            "is_published": False,
+            "scheduled_publish_date": sched_date,
+            "topic_category": topic_value,
+        }
+        obj = db_svc.save_social_post(db, post_data)
+
+        # Auto cross-check + auto-regenerate (same logic as single generate)
+        MAX_AUTO_REGEN = 2
+        try:
+            from ..models.db import SocialPostDB
+            post_obj = db.query(SocialPostDB).filter(SocialPostDB.id == post_data["id"]).first()
+            if post_obj:
+                for regen_attempt in range(MAX_AUTO_REGEN + 1):
+                    post_obj.verification_status = "checking"
+                    db.commit()
+                    current_content = post_obj.content
+                    verification = await pplx.cross_check_post(current_content, api_key)
+                    post_obj.verification_status = verification["status"]
+                    post_obj.verification_score = verification["score"]
+                    post_obj.verification_json = json.dumps(verification, ensure_ascii=False)
+                    db.commit()
+
+                    score = verification.get("score", 0)
+                    has_false = any(
+                        c.get("verdict", "").lower() == "false"
+                        for c in verification.get("claims", [])
+                    )
+                    is_postable = (score >= 0.9 and not has_false)
+
+                    if is_postable or regen_attempt >= MAX_AUTO_REGEN:
+                        break
+
+                    # Extract issues and regenerate
+                    issues = []
+                    for c in verification.get("claims", []):
+                        if c.get("verdict") in ("false", "inaccurate"):
+                            issues.append({"type": "false_claim", "detail": f"{c.get('claim', '')} \u2014 {c.get('details', '')}"})
+                    OWN_ENTITIES = {"harpocrates", "comply", "comply.reg", "harpocrates solutions", "harpocrates solutions gmbh"}
+                    for e in verification.get("entities", []):
+                        if not e.get("exists"):
+                            ename = (e.get("name", "") or "").lower().strip()
+                            if ename not in OWN_ENTITIES:
+                                issues.append({"type": "missing_entity", "detail": f"{e.get('name', '')} \u2014 {e.get('details', '')}"})
+                    if not issues:
+                        break
+
+                    regen_ok = False
+                    for regen_retry in range(2):
+                        try:
+                            regen_result = await pplx.regenerate_social_post(
+                                original_content=current_content,
+                                verification_issues=issues,
+                                platform=post_obj.platform,
+                                api_key=api_key,
+                            )
+                            regen_ok = True
+                            break
+                        except ValueError:
+                            pass
+                    if not regen_ok:
+                        break
+
+                    new_content = regen_result["content"]
+                    if "\U0001f517 www.harpocrates-corp.com" in new_content:
+                        new_content = new_content.replace(
+                            "\U0001f517 www.harpocrates-corp.com",
+                            f"\n\n\U0001f4c5 {timestamp_str}\n\n\U0001f517 www.harpocrates-corp.com",
+                        )
+                    else:
+                        new_content += f"\n\n\U0001f4c5 {timestamp_str}"
+                    post_obj.content = new_content
+                    post_obj.hashtags_json = json.dumps(regen_result["hashtags"])
+                    db.commit()
+
+                db.refresh(post_obj)
+                obj = post_obj
+        except Exception as e:
+            logger.warning(f"Auto cross-check/regen failed for {date_label}: {e}")
+
+        results.append({
+            "date_label": date_label,
+            "scheduled_publish_date": sched_date.isoformat(),
+            "post": db_svc.social_post_to_response(obj),
+        })
+
+    return {
+        "success": True,
+        "generated": len(results),
+        "posts": results,
+    }
+
+
 # ─── Address Book ─────────────────────────────────────────────────
 
 @router.get("/address-book")

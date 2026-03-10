@@ -1719,7 +1719,12 @@ REQUIREMENTS:
 - Closing question or CTA
 - 150-250 words
 - Leave [1], [2] citation markers — do NOT write URLs yourself{dupe_context}
-Hashtags: 5-7 from: #DORA #NIS2 #GDPR #RegTech #Compliance #FinTech #RegulatoryCompliance #COMPLY #RiskManagement #AML #BaFin #EBA #ESMA #ECB #CSRD #EUAIAct #Harpocrates
+HASHTAG STRATEGY (pick 5-7, mix from tiers):
+Tier 1 — ALWAYS include 1-2: #RegTech #Compliance #RegulatoryCompliance
+Tier 2 — Topic-specific, pick 2-3: #DORA #NIS2 #GDPR #EUAIAct #CSRD #MiCA #PSD3 #AMLD6 #DataAct #CyberResilience #ESG #AML #DigitalEuro
+Tier 3 — Industry/Audience, pick 1-2: #FinTech #Banking #Insurance #CFO #ChiefComplianceOfficer #GRC #DataProtection #CyberSecurity #RiskManagement
+Tier 4 — Brand, ALWAYS include: #Harpocrates #COMPLY
+Total: exactly 6-8 hashtags. Always include #Harpocrates and #COMPLY.
 Return ONLY valid JSON with content and hashtags."""
 
     content = await _call_api(
@@ -1874,6 +1879,12 @@ REQUIREMENTS:
 - Reference COMPLY/COMPLY.Reg as Harpocrates' own product
 - 150-250 words
 - Closing question or CTA
+HASHTAG STRATEGY (pick 5-7, mix from tiers):
+Tier 1 — ALWAYS include 1-2: #RegTech #Compliance #RegulatoryCompliance
+Tier 2 — Topic-specific, pick 2-3: #DORA #NIS2 #GDPR #EUAIAct #CSRD #MiCA #PSD3 #AMLD6 #DataAct #CyberResilience #ESG #AML #DigitalEuro
+Tier 3 — Industry/Audience, pick 1-2: #FinTech #Banking #Insurance #CFO #ChiefComplianceOfficer #GRC #DataProtection #CyberSecurity #RiskManagement
+Tier 4 — Brand, ALWAYS include: #Harpocrates #COMPLY
+Total: exactly 6-8 hashtags. Always include #Harpocrates and #COMPLY.
 Return ONLY valid JSON with content and hashtags."""
 
     content = await _call_api(
