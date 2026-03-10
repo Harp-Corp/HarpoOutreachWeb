@@ -330,6 +330,9 @@ def lead_db_to_response(lead: LeadDB) -> dict:
         "campaign_current_step": getattr(lead, "campaign_current_step", 0),
         "campaign_paused": getattr(lead, "campaign_paused", False),
         "last_reply_check": lead.last_reply_check.isoformat() if getattr(lead, "last_reply_check", None) else None,
+        # Scoring
+        "lead_score": getattr(lead, "lead_score", 0.0) or 0.0,
+        "lead_score_details": getattr(lead, "lead_score_details", "") or "",
     }
 
 
