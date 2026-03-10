@@ -499,3 +499,113 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #1a365d
   margin: 0 0.25rem;
   flex-shrink: 0;
 }
+
+/* ═══ LOGIN PAGE ═════════════════════════════════ */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f172a;
+}
+.login-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 2.5rem 2rem;
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.login-logo {
+  width: 180px;
+  height: auto;
+  margin-bottom: 1.5rem;
+}
+.login-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 0.375rem;
+}
+.login-desc {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin-bottom: 1.75rem;
+}
+.login-google-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.75rem 1.25rem;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  background: #fff;
+  color: #1e293b;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.login-google-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.login-footer {
+  margin-top: 1.5rem;
+  font-size: 0.6875rem;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+/* ═══ SIDEBAR USER PROFILE ═══════════════════════ */
+.user-profile-sidebar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.25rem;
+}
+.user-avatar-sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.user-info-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.user-name-sidebar {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-role-sidebar {
+  font-size: 0.5625rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ═══ NAV COUNT BADGE ════════════════════════════ */
+.nav-count {
+  margin-left: auto;
+  background: #1e293b;
+  color: #94a3b8;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 0.625rem;
+  font-weight: 600;
+}
+.nav-item.active .nav-count {
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+}

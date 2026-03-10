@@ -5,7 +5,8 @@ import { useState, useEffect, useCallback } from 'react'
 
 const API = '/api'
 
-export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, stopLoading, loading }) {
+export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, stopLoading, loading, authStatus }) {
+  const isAdmin = authStatus?.role === 'admin'
   const [tab, setTab] = useState('warmup')
   const [warmupAccounts, setWarmupAccounts] = useState([])
   const [senderPool, setSenderPool] = useState({ senders: [], capacity: {} })
@@ -18,7 +19,7 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
   const loadWarmup = useCallback(async () => { try { const r = await fetchJson(`${API}/warmup/accounts`); setWarmupAccounts(r.data || []) } catch {} }, [fetchJson])
   const loadPool = useCallback(async () => { try { const r = await fetchJson(`${API}/sender-pool`); setSenderPool(r.data || { senders: [], capacity: {} }) } catch {} }, [fetchJson])
   const loadTracking = useCallback(async () => { try { const r = await fetchJson(`${API}/tracking/dashboard`); setTrackingDashboard(r.data || null) } catch {} }, [fetchJson])
-  const loadUsers = useCallback(async () => { try { const r = await fetchJson(`${API}/users`); setUsers(r.data || []) } catch {} }, [fetchJson])
+  const loadUsers = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/users`); setUsers(r.data || []) } catch {} }, [fetchJson])
   const loadActivity = useCallback(async () => { try { const r = await fetchJson(`${API}/activity-log?limit=20`); setActivityLog(r.data || []) } catch {} }, [fetchJson])
   const loadABTests = useCallback(async () => { try { const r = await fetchJson(`${API}/ab-tests`); setAbTests(r.data || []) } catch {} }, [fetchJson])
 
@@ -94,7 +95,7 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
     const fd = new FormData(e.target)
     try {
       startLoading('Einladung wird gesendet...')
-      await fetchJson(`${API}/users/invite`, {
+      await fetchJson(`${API}/auth/users/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -125,7 +126,7 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
   // Deactivate user
   const deactivateUser = async (id) => {
     if (!confirm('Benutzer wirklich deaktivieren?')) return
-    try { await fetchJson(`${API}/users/${id}`, { method: 'DELETE' }); loadUsers() } catch {}
+    try { await fetchJson(`${API}/auth/users/${id}`, { method: 'DELETE' }); loadUsers() } catch {}
   }
 
   const warmupProgress = (day, complete) => {
@@ -344,8 +345,9 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
               <h2 style={{ margin: 0 }}>Team-Verwaltung</h2>
               <p className="sub">Bis zu 10 Benutzer können die Plattform nutzen</p>
             </div>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowAddForm(!showAddForm)}>+ Einladen</button>
+            {isAdmin && <button className="btn btn-primary btn-sm" onClick={() => setShowAddForm(!showAddForm)}>+ Einladen</button>}
           </div>
+          {!isAdmin && <div className="card" style={{ marginBottom: '1rem', background: '#f0f9ff', border: '1px solid #bae6fd' }}><p className="sub" style={{textAlign:'center',padding:'0.5rem 0'}}>Nur Administratoren können Benutzer verwalten.</p></div>}
 
           {showAddForm && (
             <div className="card" style={{ marginBottom: '1rem', background: '#f9fafb' }}>
@@ -381,7 +383,7 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   {u.last_login && <span className="sub" style={{ fontSize: '0.7rem' }}>Letzter Login: {new Date(u.last_login).toLocaleDateString('de-DE')}</span>}
                   <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Aktiv' : 'Inaktiv'}</span>
-                  <button className="btn btn-ghost btn-sm" onClick={() => deactivateUser(u.id)} title="Deaktivieren">✕</button>
+                  {isAdmin && <button className="btn btn-ghost btn-sm" onClick={() => deactivateUser(u.id)} title="Deaktivieren">✕</button>}
                 </div>
               </div>
             ))}

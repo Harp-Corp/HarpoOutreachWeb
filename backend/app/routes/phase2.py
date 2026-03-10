@@ -257,80 +257,9 @@ async def tracking_dashboard(db: Session = Depends(get_db)):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Phase 4: Multi-User
+# Phase 4: Multi-User — Moved to auth.py with admin-protected endpoints
+# User management is now at /api/auth/users/* (requires authentication)
 # ═══════════════════════════════════════════════════════════════════
-
-MAX_USERS = 10
-
-
-class InviteUserBody(BaseModel):
-    email: str
-    name: str = ""
-    role: str = "user"
-
-
-@router.get("/users")
-async def list_users(db: Session = Depends(get_db)):
-    """List all users."""
-    users = db.query(UserDB).order_by(UserDB.created_at).all()
-    return {"success": True, "data": [
-        {
-            "id": str(u.id),
-            "email": u.email,
-            "name": u.name,
-            "role": u.role,
-            "is_active": u.is_active,
-            "sender_email": u.sender_email,
-            "last_login": u.last_login.isoformat() if u.last_login else None,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-        }
-        for u in users
-    ]}
-
-
-@router.post("/users/invite")
-async def invite_user(body: InviteUserBody, db: Session = Depends(get_db)):
-    """Invite a new user (max 10)."""
-    count = db.query(UserDB).filter(UserDB.is_active == True).count()
-    if count >= MAX_USERS:
-        raise HTTPException(400, f"Maximale Anzahl von {MAX_USERS} Benutzern erreicht.")
-    existing = db.query(UserDB).filter(UserDB.email == body.email).first()
-    if existing:
-        raise HTTPException(400, f"Benutzer {body.email} existiert bereits.")
-    user = UserDB(
-        id=uuid4(),
-        email=body.email,
-        name=body.name or body.email.split("@")[0],
-        role=body.role,
-    )
-    db.add(user)
-    db.commit()
-    _log_activity(db, None, "system", "user_invited", "user", str(user.id), f"User {body.email} eingeladen")
-    return {"success": True, "data": {"id": str(user.id), "email": user.email, "role": user.role}}
-
-
-@router.delete("/users/{user_id}")
-async def remove_user(user_id: UUID, db: Session = Depends(get_db)):
-    """Deactivate a user."""
-    user = db.query(UserDB).filter(UserDB.id == user_id).first()
-    if not user:
-        raise HTTPException(404, "Benutzer nicht gefunden.")
-    user.is_active = False
-    db.commit()
-    return {"success": True, "message": f"Benutzer {user.email} deaktiviert."}
-
-
-@router.patch("/users/{user_id}")
-async def update_user(user_id: UUID, body: dict, db: Session = Depends(get_db)):
-    """Update user settings."""
-    user = db.query(UserDB).filter(UserDB.id == user_id).first()
-    if not user:
-        raise HTTPException(404, "Benutzer nicht gefunden.")
-    for key in ["name", "role", "sender_email", "sender_name", "is_active"]:
-        if key in body:
-            setattr(user, key, body[key])
-    db.commit()
-    return {"success": True}
 
 
 @router.get("/activity-log")
