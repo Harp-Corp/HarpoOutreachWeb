@@ -40,6 +40,7 @@ function App() {
   const [checkingRepliesImap, setCheckingRepliesImap] = useState(false)
   const [bounceCheckResult, setBounceCheckResult] = useState(null)
   const [imapReplyResult, setImapReplyResult] = useState(null)
+  const [activityLog, setActivityLog] = useState([])
 
   // Campaign wizard state
   const [campStep, setCampStep] = useState(1) // 1=select, 2=draft+edit, 3=approve, 4=send
@@ -131,6 +132,7 @@ function App() {
   const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
   const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch {} }, [])
   const loadLinkedinAnalytics = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/linkedin-posts`); setLinkedinAnalytics(r) } catch(e) { console.warn('LinkedIn analytics load failed:', e) } }, [])
+  const loadActivityLog = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/activity-log?limit=30`); setActivityLog(r.data || []) } catch {} }, [])
   const loadAuthStatus = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {} }, [])
   const loadLinkedinSettings = useCallback(async () => {
     try {
@@ -150,7 +152,7 @@ function App() {
     else if (section === 'addressbook') { loadAddressBook(); loadLeads(); loadSentEmails() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts() }
-    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics(); loadPosts() }
+    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics(); loadPosts(); loadActivityLog() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
 
@@ -1061,7 +1063,18 @@ function App() {
                 <div className="stat-card"><div className="stat-val">{addressBook.length}</div><div className="stat-lbl">Adressbuch</div></div>
                 <div className="stat-card"><div className="stat-val">{stats.emails_sent || 0}</div><div className="stat-lbl">Gesendet</div></div>
                 <div className="stat-card" style={analyticsSummary?.total_replied > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{analyticsSummary?.total_replied || 0}</div><div className="stat-lbl">Antworten</div></div>
+                {analyticsSummary?.tracking_total_tracked > 0 && <>
+                  <div className="stat-card" style={{borderColor:'#3b82f6'}}><div className="stat-val">{analyticsSummary.tracking_open_rate}%</div><div className="stat-lbl">Open-Rate</div></div>
+                  <div className="stat-card" style={{borderColor:'#8b5cf6'}}><div className="stat-val">{analyticsSummary.tracking_click_rate}%</div><div className="stat-lbl">Click-Rate</div></div>
+                </>}
               </div>
+              {/* Sender Pool Status */}
+              {analyticsSummary?.pool_active_senders > 0 && (
+                <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginTop:'0.5rem',padding:'0.5rem 0.75rem',background:'#f0f9ff',borderRadius:'0.375rem',border:'1px solid #bae6fd',fontSize:'0.8rem',color:'#0c4a6e'}}>
+                  <span style={{fontSize:'1rem'}}>🔄</span>
+                  <span>Sender Pool: <strong>{analyticsSummary.pool_active_senders}</strong> aktive Absender · <strong>{analyticsSummary.pool_sent_today}</strong>/{analyticsSummary.pool_daily_capacity} heute gesendet</span>
+                </div>
+              )}
             )}
 
             <div className="card">
@@ -2066,6 +2079,49 @@ function App() {
               </div>
             </div>
 
+            {/* Open/Click Tracking Dashboard */}
+            {analyticsSummary?.tracking_total_tracked > 0 && (
+              <div className="card" style={{border:'1px solid #c7d2fe',background:'linear-gradient(135deg,#eef2ff 0%,#fff 100%)'}}>
+                <h2 style={{color:'#3730a3'}}>Open/Click-Tracking</h2>
+                <p className="sub">Echtzeit-Tracking für alle versendeten E-Mails mit Tracking-Pixel und Link-Wrapping</p>
+                <div className="stats-grid" style={{marginTop:'0.75rem'}}>
+                  <div className="stat-card" style={{borderColor:'#6366f1'}}><div className="stat-val">{analyticsSummary.tracking_total_tracked}</div><div className="stat-lbl">Getrackt</div></div>
+                  <div className="stat-card" style={{borderColor:'#3b82f6'}}><div className="stat-val">{analyticsSummary.tracking_total_opened}</div><div className="stat-lbl">Geöffnet</div></div>
+                  <div className="stat-card" style={{borderColor:'#8b5cf6'}}><div className="stat-val">{analyticsSummary.tracking_total_clicked}</div><div className="stat-lbl">Geklickt</div></div>
+                  <div className="stat-card" style={{borderColor:'#3b82f6'}}><div className="stat-val">{analyticsSummary.tracking_open_rate}%</div><div className="stat-lbl">Open-Rate</div></div>
+                  <div className="stat-card" style={{borderColor:'#8b5cf6'}}><div className="stat-val">{analyticsSummary.tracking_click_rate}%</div><div className="stat-lbl">Click-Rate</div></div>
+                </div>
+                {/* Daily breakdown chart */}
+                {analyticsSummary.tracking_daily && Object.keys(analyticsSummary.tracking_daily).length > 0 && (
+                  <div style={{marginTop:'1rem',paddingTop:'0.75rem',borderTop:'1px solid #e0e7ff'}}>
+                    <h3 style={{fontSize:'0.875rem',fontWeight:600,color:'#4338ca',margin:'0 0 0.5rem'}}>Tagesübersicht</h3>
+                    <div style={{display:'flex',flexDirection:'column',gap:'0.375rem'}}>
+                      {Object.entries(analyticsSummary.tracking_daily).map(([day, d]) => (
+                        <div key={day} style={{display:'flex',alignItems:'center',gap:'0.5rem',fontSize:'0.8rem'}}>
+                          <span style={{width:'80px',color:'#6b7280',fontFamily:'monospace',fontSize:'0.75rem'}}>{day}</span>
+                          <div style={{flex:1,display:'flex',gap:'2px',height:'20px'}}>
+                            <div style={{width:`${d.sent > 0 ? Math.max(d.sent * 8, 2) : 0}px`,background:'#c7d2fe',borderRadius:'2px',height:'100%'}} title={`${d.sent} gesendet`} />
+                            <div style={{width:`${d.opened > 0 ? Math.max(d.opened * 8, 2) : 0}px`,background:'#6366f1',borderRadius:'2px',height:'100%'}} title={`${d.opened} geöffnet`} />
+                            <div style={{width:`${d.clicked > 0 ? Math.max(d.clicked * 8, 2) : 0}px`,background:'#8b5cf6',borderRadius:'2px',height:'100%'}} title={`${d.clicked} geklickt`} />
+                          </div>
+                          <div style={{display:'flex',gap:'0.75rem',fontSize:'0.7rem',color:'#6b7280',whiteSpace:'nowrap'}}>
+                            <span>{d.sent} ✉</span>
+                            <span style={{color:'#6366f1'}}>{d.opened} 👁</span>
+                            <span style={{color:'#8b5cf6'}}>{d.clicked} 🔗</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{display:'flex',gap:'1rem',marginTop:'0.5rem',fontSize:'0.7rem',color:'#9ca3af'}}>
+                      <span>■ Gesendet</span>
+                      <span style={{color:'#6366f1'}}>■ Geöffnet</span>
+                      <span style={{color:'#8b5cf6'}}>■ Geklickt</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Verification Quality */}
             {analyticsSummary?.by_risk_level && (analyticsSummary.by_risk_level.low > 0 || analyticsSummary.by_risk_level.medium > 0 || analyticsSummary.by_risk_level.high > 0) && (
               <div className="card">
@@ -2338,6 +2394,48 @@ function App() {
                   )}
                 </div>
               ))}
+            </div>
+
+            {/* Activity Log / Audit Trail */}
+            <div className="card">
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'0.75rem'}}>
+                <div>
+                  <h2 style={{margin:0}}>Aktivitätsprotokoll</h2>
+                  <p className="sub" style={{margin:'0.25rem 0 0'}}>Letzte Aktionen im System (Versand, Imports, Änderungen)</p>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={loadActivityLog} disabled={loading}>Aktualisieren</button>
+              </div>
+              {activityLog.length === 0 && <p className="sub">Noch keine Aktivitäten erfasst.</p>}
+              {activityLog.length > 0 && (
+                <div style={{maxHeight:'400px',overflowY:'auto'}}>
+                  <table className="data-table" style={{fontSize:'0.8rem'}}>
+                    <thead>
+                      <tr><th style={{width:'140px'}}>Zeitpunkt</th><th style={{width:'100px'}}>Aktion</th><th style={{width:'80px'}}>Typ</th><th>Details</th></tr>
+                    </thead>
+                    <tbody>
+                      {activityLog.map(a => {
+                        const actionLabels = {
+                          email_sent: '✉️ Gesendet', email_drafted: '✏️ Entwurf', email_approved: '✅ Freigegeben',
+                          user_invited: '👤 Eingeladen', company_added: '🏢 Unternehmen', lead_created: '👥 Kontakt',
+                          bounce_detected: '⚠️ Bounce', reply_detected: '📨 Antwort', unsubscribe: '🚫 Abmeldung',
+                          follow_up_sent: '🔁 Follow-Up', batch_send: '📧 Batch',
+                        }
+                        const entityLabels = { lead: 'Kontakt', company: 'Unternehmen', email: 'E-Mail', user: 'Benutzer', campaign: 'Kampagne' }
+                        return (
+                          <tr key={a.id}>
+                            <td style={{fontFamily:'monospace',fontSize:'0.7rem',color:'#6b7280',whiteSpace:'nowrap'}}>
+                              {a.created_at ? new Date(a.created_at).toLocaleString('de-DE', {day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—'}
+                            </td>
+                            <td><span style={{fontSize:'0.75rem'}}>{actionLabels[a.action] || a.action}</span></td>
+                            <td><span className="badge" style={{fontSize:'0.6rem'}}>{entityLabels[a.entity_type] || a.entity_type}</span></td>
+                            <td style={{color:'#374151',maxWidth:'400px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.details}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

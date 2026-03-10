@@ -18,9 +18,10 @@ from ..services import gmail_service as gmail
 from ..services import smtp_service as smtp
 from ..services import google_auth_service as gauth
 from ..services import tracking_service as tracking_svc
+from ..services import rotation_service as rotation
 from ..config import settings
 from ..services import perplexity_service as pplx
-from ..models.db_phase2 import ActivityLogDB
+from ..models.db_phase2 import ActivityLogDB, SenderPoolDB
 
 router = APIRouter(prefix="/email", tags=["Email Pipeline"])
 
@@ -578,10 +579,19 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     if lead.scheduled_send_date and lead.scheduled_send_date > datetime.utcnow():
         return {"success": False, "error": f"E-Mail an {lead.name} ist geplant fuer {lead.scheduled_send_date}. Uebersprungen."}
 
-    sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
-    _logger.info(f"Sending email to {lead.email} (lead={lead_id}, subject='{draft.get('subject', '')[:50]}')")
+    default_sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
 
-    reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+    # Try Sender Pool rotation first (if pool has active senders)
+    pool_sender = rotation.get_next_sender(db)
+    if pool_sender:
+        sender = pool_sender.email
+        reply_to = pool_sender.reply_to or db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+        _logger.info(f"Using pool sender {sender} for {lead.email} (lead={lead_id})")
+    else:
+        sender = default_sender
+        reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+
+    _logger.info(f"Sending email to {lead.email} (lead={lead_id}, sender={sender}, subject='{draft.get('subject', '')[:50]}')")
 
     # Create tracking entry before sending
     tracking_id = None
@@ -595,12 +605,26 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
         _logger.warning(f"Tracking entry creation failed: {te}")
 
     try:
-        send_result = await _send_via_smtp(
-            to=lead.email, from_addr=sender,
-            subject=draft["subject"], body=draft["body"],
-            db=db, reply_to=reply_to,
-            tracking_id=tracking_id,
-        )
+        # If using pool sender, use their SMTP config; otherwise default
+        if pool_sender:
+            import asyncio
+            backend_url = "https://harpo-backend-967761810588.europe-west1.run.app"
+            send_result = await asyncio.to_thread(
+                smtp.send_email,
+                to=lead.email, from_addr=sender,
+                subject=draft["subject"], body=draft["body"],
+                smtp_host=pool_sender.smtp_host, smtp_port=pool_sender.smtp_port,
+                smtp_user=pool_sender.smtp_user, smtp_password=pool_sender.smtp_password_encrypted,
+                reply_to=reply_to, tracking_id=tracking_id, backend_url=backend_url,
+            )
+            rotation.record_send(db, pool_sender)
+        else:
+            send_result = await _send_via_smtp(
+                to=lead.email, from_addr=sender,
+                subject=draft["subject"], body=draft["body"],
+                db=db, reply_to=reply_to,
+                tracking_id=tracking_id,
+            )
     except PermissionError as e:
         _logger.error(f"SMTP auth failed for {lead.email}: {e}")
         lead.delivery_status = "Failed"

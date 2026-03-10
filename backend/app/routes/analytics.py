@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..models.db import LeadDB, get_db
+from ..models.db_phase2 import ActivityLogDB, EmailTrackingDB, SenderPoolDB
 from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
+from ..services import tracking_service as tracking_svc
 from .email_pipeline import _get_access_token, _refresh_google_token
 
 logger = logging.getLogger("harpo.analytics")
@@ -300,6 +303,23 @@ async def analytics_summary(db: Session = Depends(get_db)):
     effective_base = total_sent - total_bounced
     effective_reply_rate = round((total_replied / effective_base * 100), 1) if effective_base > 0 else 0.0
 
+    # ── Email Tracking (Open/Click) from email_tracking table ──
+    tracking_stats = tracking_svc.get_tracking_stats(db)
+    tracking_daily = defaultdict(lambda: {"sent": 0, "opened": 0, "clicked": 0})
+    for e in tracking_stats.get("entries", []):
+        if e["sent_at"]:
+            day = e["sent_at"][:10]
+            tracking_daily[day]["sent"] += 1
+            if e["opens"] > 0:
+                tracking_daily[day]["opened"] += 1
+            if e["clicks"] > 0:
+                tracking_daily[day]["clicked"] += 1
+
+    # ── Sender Pool status ──
+    pool_senders = db.query(SenderPoolDB).filter(SenderPoolDB.is_active == True).all()
+    pool_capacity = sum(s.daily_limit for s in pool_senders)
+    pool_sent_today = sum(s.emails_sent_today for s in pool_senders)
+
     return {
         "data": {
             # Core funnel
@@ -327,8 +347,39 @@ async def analytics_summary(db: Session = Depends(get_db)):
             "total_campaign_paused": total_campaign_paused,
             # Status distribution
             "by_status": by_status,
+            # Email Tracking (Open/Click)
+            "tracking_open_rate": tracking_stats.get("open_rate", 0),
+            "tracking_click_rate": tracking_stats.get("click_rate", 0),
+            "tracking_total_tracked": tracking_stats.get("total_sent", 0),
+            "tracking_total_opened": tracking_stats.get("total_opened", 0),
+            "tracking_total_clicked": tracking_stats.get("total_clicked", 0),
+            "tracking_daily": dict(sorted(tracking_daily.items(), reverse=True)[:14]),
+            # Sender Pool
+            "pool_active_senders": len(pool_senders),
+            "pool_daily_capacity": pool_capacity,
+            "pool_sent_today": pool_sent_today,
         }
     }
+
+
+# ─── Activity Log (accessible from Analytics) ────────────────
+
+@router.get("/activity-log")
+async def analytics_activity_log(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+    """Get recent activity log entries for the analytics dashboard."""
+    entries = db.query(ActivityLogDB).order_by(ActivityLogDB.created_at.desc()).limit(limit).all()
+    return {"data": [
+        {
+            "id": str(e.id),
+            "user_email": e.user_email,
+            "action": e.action,
+            "entity_type": e.entity_type,
+            "entity_id": e.entity_id,
+            "details": e.details,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]}
 
 
 # ─── Funnel View (Detailed Pipeline) ────────────────────────────
