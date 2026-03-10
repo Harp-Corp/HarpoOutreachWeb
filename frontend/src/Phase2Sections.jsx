@@ -93,6 +93,8 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
   const inviteUser = async (e) => {
     e.preventDefault()
     const fd = new FormData(e.target)
+    const pw = fd.get('password') || ''
+    if (pw && pw.length < 8) { setError('Passwort muss mindestens 8 Zeichen lang sein.'); return }
     try {
       startLoading('Einladung wird gesendet...')
       await fetchJson(`${API}/auth/users/invite`, {
@@ -102,10 +104,29 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
           email: fd.get('email'),
           name: fd.get('name'),
           role: fd.get('role') || 'user',
+          password: pw,
         })
       })
-      showSuccess('Benutzer eingeladen')
+      showSuccess(pw ? 'Benutzer eingeladen (mit Passwort-Login)' : 'Benutzer eingeladen (Google-Login)')
       setShowAddForm(false)
+      loadUsers()
+    } catch (err) { setError(err.message) }
+    finally { stopLoading() }
+  }
+
+  // Admin set password for a user
+  const setUserPassword = async (userId) => {
+    const pw = prompt('Neues Passwort eingeben (mind. 8 Zeichen):')
+    if (!pw) return
+    if (pw.length < 8) { setError('Passwort muss mindestens 8 Zeichen lang sein.'); return }
+    try {
+      startLoading('Passwort wird gesetzt...')
+      await fetchJson(`${API}/auth/users/${userId}/set-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw })
+      })
+      showSuccess('Passwort gesetzt')
       loadUsers()
     } catch (err) { setError(err.message) }
     finally { stopLoading() }
@@ -352,15 +373,20 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
           {showAddForm && (
             <div className="card" style={{ marginBottom: '1rem', background: '#f9fafb' }}>
               <form onSubmit={inviteUser}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   <div className="form-group"><label>E-Mail</label><input name="email" required placeholder="user@firma.de" /></div>
                   <div className="form-group"><label>Name</label><input name="name" placeholder="Max Mustermann" /></div>
+                  <div className="form-group">
+                    <label>Passwort (optional)</label>
+                    <input name="password" type="password" placeholder="Leer = nur Google-Login" minLength={8} />
+                  </div>
                   <div className="form-group">
                     <label>Rolle</label>
                     <select name="role"><option value="user">Benutzer</option><option value="admin">Admin</option></select>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+                <p className="sub" style={{ margin: '0.5rem 0' }}>Mit Passwort: Nutzer kann sich per E-Mail/Passwort anmelden (kein Google nötig). Ohne Passwort: Nutzer meldet sich über Google an.</p>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button type="submit" className="btn btn-primary btn-sm" disabled={loading}>Einladen</button>
                   <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAddForm(false)}>Abbrechen</button>
                 </div>
@@ -382,7 +408,10 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   {u.last_login && <span className="sub" style={{ fontSize: '0.7rem' }}>Letzter Login: {new Date(u.last_login).toLocaleDateString('de-DE')}</span>}
+                  {u.has_password && <span className="badge badge-gray" title="E-Mail/Passwort-Login">PW</span>}
+                  {u.has_google && <span className="badge badge-blue" title="Google-Login">G</span>}
                   <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Aktiv' : 'Inaktiv'}</span>
+                  {isAdmin && <button className="btn btn-ghost btn-sm" onClick={() => setUserPassword(u.id)} title="Passwort setzen">🔑</button>}
                   {isAdmin && <button className="btn btn-ghost btn-sm" onClick={() => deactivateUser(u.id)} title="Deaktivieren">✕</button>}
                 </div>
               </div>

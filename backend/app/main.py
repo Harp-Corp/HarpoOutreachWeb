@@ -92,11 +92,30 @@ def _init_phase2_tables():
     logger.info("Phase 2 tables initialized")
 
 
+def _migrate_users_table():
+    """Add password_hash column if not exists (for email/password login)."""
+    from sqlalchemy import text, inspect
+    db = SessionLocal()
+    try:
+        insp = inspect(db.bind)
+        cols = [c["name"] for c in insp.get_columns("users")]
+        if "password_hash" not in cols:
+            db.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR"))
+            db.commit()
+            logger.info("Migration: added password_hash column to users")
+    except Exception as e:
+        logger.warning(f"Migration check failed (may be fine on first run): {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
     logger.info("Database initialized")
     _init_phase2_tables()
+    _migrate_users_table()
     _seed_settings()
     logger.info("Settings seeding complete — app ready")
 

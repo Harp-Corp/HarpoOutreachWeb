@@ -1,4 +1,4 @@
-# Google OAuth routes – server-side flow with multi-user session management
+# Authentication routes – Google OAuth + Email/Password login
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
+from passlib.context import CryptContext
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -28,6 +30,26 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 MAX_USERS = 10
 
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _set_session_cookie(response, user_id: str, email: str, role: str):
+    """Helper to set JWT session cookie on a response."""
+    session_token = create_session_token(user_id, email, role)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,  # 30 days
+        path="/",
+    )
+    return response
+
+
+# ─── Google OAuth ─────────────────────────────────────────────────
 
 @router.get("/google/login")
 async def google_login(db: Session = Depends(get_db)):
@@ -131,24 +153,80 @@ async def google_callback(code: str, db: Session = Depends(get_db)):
                        str(datetime.utcnow().timestamp() + tokens.get("expires_in", 3600)))
     db_svc.set_setting(db, "google_user_email", email)
 
-    # Create JWT session
-    session_token = create_session_token(str(user.id), user.email, user.role)
-
-    # Redirect to frontend with session cookie
+    # Create JWT session + redirect
     frontend_url = settings.frontend_url.rstrip("/")
     response = RedirectResponse(f"{frontend_url}/?auth=success")
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=30 * 24 * 3600,  # 30 days
-        path="/",
-    )
-    logger.info(f"User logged in: {email} (role={user.role})")
+    _set_session_cookie(response, str(user.id), user.email, user.role)
+    logger.info(f"User logged in via Google: {email} (role={user.role})")
     return response
 
+
+# ─── Email/Password Login ─────────────────────────────────────────
+
+class EmailLoginBody(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/login")
+async def email_login(body: EmailLoginBody, db: Session = Depends(get_db)):
+    """Authenticate with email + password. Returns session cookie."""
+    from ..models.db_phase2 import UserDB
+
+    email = body.email.lower().strip()
+    user = db.query(UserDB).filter(UserDB.email == email).first()
+
+    if not user:
+        raise HTTPException(401, "Ungültige Anmeldedaten.")
+
+    if not user.is_active:
+        raise HTTPException(401, "Konto deaktiviert. Bitte kontaktiere den Administrator.")
+
+    if not user.password_hash:
+        raise HTTPException(401, "Für dieses Konto ist kein Passwort hinterlegt. Bitte mit Google anmelden oder den Admin bitten, ein Passwort zu setzen.")
+
+    if not pwd_context.verify(body.password, user.password_hash):
+        raise HTTPException(401, "Ungültige Anmeldedaten.")
+
+    # Update last login
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    response = JSONResponse({"success": True, "name": user.name, "role": user.role})
+    _set_session_cookie(response, str(user.id), user.email, user.role)
+    logger.info(f"User logged in via email/password: {email} (role={user.role})")
+    return response
+
+
+class SetPasswordBody(BaseModel):
+    current_password: str = ""
+    new_password: str
+
+
+@router.post("/set-password")
+async def set_own_password(body: SetPasswordBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Let a logged-in user set/change their own password."""
+    from ..models.db_phase2 import UserDB
+    from uuid import UUID as UUID_type
+
+    db_user = db.query(UserDB).filter(UserDB.id == UUID_type(user["id"])).first()
+    if not db_user:
+        raise HTTPException(404, "Benutzer nicht gefunden.")
+
+    # If user already has a password, require old password
+    if db_user.password_hash and body.current_password:
+        if not pwd_context.verify(body.current_password, db_user.password_hash):
+            raise HTTPException(400, "Aktuelles Passwort ist falsch.")
+
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
+
+    db_user.password_hash = pwd_context.hash(body.new_password)
+    db.commit()
+    return {"success": True, "message": "Passwort gesetzt."}
+
+
+# ─── Auth Status & Session ────────────────────────────────────────
 
 @router.get("/status")
 async def auth_status(user: dict = Depends(get_current_user_optional), db: Session = Depends(get_db)):
@@ -164,27 +242,15 @@ async def auth_status(user: dict = Depends(get_current_user_optional), db: Sessi
             "token_expired": False,
         }
 
-    # Fallback: check old-style token auth (backwards compatibility)
-    access_token = db_svc.get_setting(db, "google_access_token")
-    email = db_svc.get_setting(db, "google_user_email")
-    expiry = db_svc.get_setting(db, "google_token_expiry")
-
-    is_authenticated = bool(access_token)
-    is_expired = False
-    if expiry:
-        try:
-            is_expired = float(expiry) < datetime.utcnow().timestamp()
-        except (ValueError, TypeError):
-            pass
-
+    # No valid session
     return {
-        "authenticated": is_authenticated and not is_expired,
-        "email": email or "",
+        "authenticated": False,
+        "email": "",
         "name": "",
-        "role": "admin",  # Legacy single-user is always admin
+        "role": "",
         "avatar_url": "",
         "user_id": None,
-        "token_expired": is_expired,
+        "token_expired": False,
     }
 
 
@@ -238,6 +304,8 @@ async def list_users(admin: dict = Depends(require_admin), db: Session = Depends
             "name": u.name,
             "role": u.role,
             "is_active": u.is_active,
+            "has_password": bool(u.password_hash),
+            "has_google": bool(u.google_id),
             "avatar_url": u.avatar_url or "",
             "last_login": u.last_login.isoformat() if u.last_login else None,
             "created_at": u.created_at.isoformat() if u.created_at else None,
@@ -246,18 +314,16 @@ async def list_users(admin: dict = Depends(require_admin), db: Session = Depends
     ]}
 
 
-from pydantic import BaseModel
-
-
 class InviteBody(BaseModel):
     email: str
     name: str = ""
     role: str = "user"
+    password: str = ""  # optional initial password for email/password users
 
 
 @router.post("/users/invite")
 async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db: Session = Depends(get_db)):
-    """Invite a new user (admin only, max 10)."""
+    """Invite a new user (admin only, max 10). Optionally set a password for non-Google users."""
     from ..models.db_phase2 import UserDB
 
     email = body.email.lower().strip()
@@ -269,21 +335,52 @@ async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db
         if not existing.is_active:
             existing.is_active = True
             existing.role = body.role
+            if body.password and len(body.password) >= 8:
+                existing.password_hash = pwd_context.hash(body.password)
             db.commit()
             return {"success": True, "data": {"id": str(existing.id), "email": existing.email, "role": existing.role}, "reactivated": True}
         raise HTTPException(400, f"Benutzer {email} existiert bereits.")
+
+    pw_hash = None
+    if body.password:
+        if len(body.password) < 8:
+            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
+        pw_hash = pwd_context.hash(body.password)
 
     user = UserDB(
         id=uuid4(),
         email=email,
         name=body.name or email.split("@")[0],
         role=body.role,
+        password_hash=pw_hash,
         is_active=True,
     )
     db.add(user)
     db.commit()
-    logger.info(f"User invited: {email} by {admin['email']}")
-    return {"success": True, "data": {"id": str(user.id), "email": user.email, "role": user.role}}
+    logger.info(f"User invited: {email} (password={'yes' if pw_hash else 'no'}) by {admin['email']}")
+    return {"success": True, "data": {"id": str(user.id), "email": user.email, "role": user.role, "has_password": bool(pw_hash)}}
+
+
+class AdminSetPasswordBody(BaseModel):
+    password: str
+
+
+@router.post("/users/{user_id}/set-password")
+async def admin_set_password(user_id: str, body: AdminSetPasswordBody, admin: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    """Admin can set/reset password for any user."""
+    from ..models.db_phase2 import UserDB
+    from uuid import UUID as UUID_type
+
+    user = db.query(UserDB).filter(UserDB.id == UUID_type(user_id)).first()
+    if not user:
+        raise HTTPException(404, "Benutzer nicht gefunden.")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
+
+    user.password_hash = pwd_context.hash(body.password)
+    db.commit()
+    logger.info(f"Password set for {user.email} by admin {admin['email']}")
+    return {"success": True, "message": f"Passwort für {user.email} gesetzt."}
 
 
 @router.delete("/users/{user_id}")

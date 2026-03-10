@@ -125,6 +125,7 @@ class UserDB(Base):
     email = Column(String, nullable=False, unique=True)
     name = Column(String, nullable=False, default="")
     role = Column(String, nullable=False, default="user")
+    password_hash = Column(String, nullable=True)  # bcrypt hash, null for Google-only users
     google_id = Column(String, nullable=True)
     avatar_url = Column(String, nullable=False, default="")
     is_active = Column(Boolean, nullable=False, default=True)
