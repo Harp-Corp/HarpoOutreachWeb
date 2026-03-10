@@ -1070,13 +1070,13 @@ function App() {
                   <div className="stat-card" style={{borderColor:'#8b5cf6'}}><div className="stat-val">{analyticsSummary.tracking_click_rate}%</div><div className="stat-lbl">Click-Rate</div></div>
                 )}
               </div>
-              {/* Sender Pool Status */}
-              {analyticsSummary?.pool_active_senders > 0 && (
-                <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginTop:'0.5rem',padding:'0.5rem 0.75rem',background:'#f0f9ff',borderRadius:'0.375rem',border:'1px solid #bae6fd',fontSize:'0.8rem',color:'#0c4a6e'}}>
-                  <span style={{fontSize:'1rem'}}>🔄</span>
-                  <span>Sender Pool: <strong>{analyticsSummary.pool_active_senders}</strong> aktive Absender · <strong>{analyticsSummary.pool_sent_today}</strong>/{analyticsSummary.pool_daily_capacity} heute gesendet</span>
-                </div>
-              )}
+            )}
+            {/* Sender Pool Status */}
+            {analyticsSummary?.pool_active_senders > 0 && (
+              <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginBottom:'1rem',padding:'0.5rem 0.75rem',background:'#f0f9ff',borderRadius:'0.375rem',border:'1px solid #bae6fd',fontSize:'0.8rem',color:'#0c4a6e'}}>
+                <span style={{fontSize:'1rem'}}>🔄</span>
+                <span>Sender Pool: <strong>{analyticsSummary.pool_active_senders}</strong> aktive Absender · <strong>{analyticsSummary.pool_sent_today}</strong>/{analyticsSummary.pool_daily_capacity} heute gesendet</span>
+              </div>
             )}
 
             <div className="card">
