@@ -17,8 +17,10 @@ from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
 from ..services import smtp_service as smtp
 from ..services import google_auth_service as gauth
+from ..services import tracking_service as tracking_svc
 from ..config import settings
 from ..services import perplexity_service as pplx
+from ..models.db_phase2 import ActivityLogDB
 
 router = APIRouter(prefix="/email", tags=["Email Pipeline"])
 
@@ -121,11 +123,16 @@ def _get_smtp_config(db: Session) -> dict:
 async def _send_via_smtp(
     to: str, from_addr: str, subject: str, body: str,
     db: Session, reply_to: str | None = None,
+    tracking_id: str | None = None,
 ) -> dict:
-    """Send email via Hostinger SMTP. Runs SMTP in a thread to avoid blocking."""
+    """Send email via Hostinger SMTP. Runs SMTP in a thread to avoid blocking.
+    tracking_id: if provided, injects open/click tracking into the HTML."""
     smtp_cfg = _get_smtp_config(db)
     if not smtp_cfg["smtp_password"]:
         raise HTTPException(400, "SMTP-Passwort nicht konfiguriert. Bitte in den Einstellungen hinterlegen.")
+
+    # Backend URL for tracking endpoints
+    backend_url = "https://harpo-backend-967761810588.europe-west1.run.app"
 
     import asyncio
     return await asyncio.to_thread(
@@ -134,7 +141,25 @@ async def _send_via_smtp(
         smtp_host=smtp_cfg["smtp_host"], smtp_port=smtp_cfg["smtp_port"],
         smtp_user=smtp_cfg["smtp_user"], smtp_password=smtp_cfg["smtp_password"],
         reply_to=reply_to,
+        tracking_id=tracking_id,
+        backend_url=backend_url,
     )
+
+
+def _log_activity(db: Session, action: str, entity_type: str, entity_id: str, details: str):
+    """Log an activity entry."""
+    try:
+        entry = ActivityLogDB(
+            user_email="system",
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details,
+        )
+        db.add(entry)
+        db.commit()
+    except Exception as e:
+        _logger.warning(f"Activity log failed: {e}")
 
 
 # ─── Pydantic models for request bodies ────────────────────────
@@ -558,11 +583,23 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
 
     reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
 
+    # Create tracking entry before sending
+    tracking_id = None
+    try:
+        tracking_id = tracking_svc.create_tracking_entry(
+            db, lead_id=str(lead_id), msg_id="",
+            sender_email=sender, recipient_email=lead.email,
+            subject=draft["subject"], email_type="initial",
+        )
+    except Exception as te:
+        _logger.warning(f"Tracking entry creation failed: {te}")
+
     try:
         send_result = await _send_via_smtp(
             to=lead.email, from_addr=sender,
             subject=draft["subject"], body=draft["body"],
             db=db, reply_to=reply_to,
+            tracking_id=tracking_id,
         )
     except PermissionError as e:
         _logger.error(f"SMTP auth failed for {lead.email}: {e}")
@@ -577,6 +614,17 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
         db.commit()
         raise HTTPException(500, f"Senden fehlgeschlagen: {str(e)}")
 
+    # Update tracking entry with msg_id
+    if tracking_id and send_result.get("msg_id"):
+        try:
+            from ..models.db_phase2 import EmailTrackingDB
+            entry = db.query(EmailTrackingDB).filter(EmailTrackingDB.id == tracking_id).first()
+            if entry:
+                entry.msg_id = send_result["msg_id"]
+                db.commit()
+        except Exception:
+            pass
+
     lead.date_email_sent = datetime.utcnow()
     draft["sent_date"] = datetime.utcnow().isoformat()
     lead.drafted_email_json = json.dumps(draft)
@@ -585,8 +633,12 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     lead.gmail_thread_id = send_result.get("msg_id", "")  # Store SMTP msg_id for tracking
     lead.updated_at = datetime.utcnow()
     db.commit()
-    _logger.info(f"Email sent successfully to {lead.email}, msg_id={send_result.get('msg_id')}, thread_id={send_result.get('thread_id')}")
-    return {"success": True, "message_id": send_result.get("msg_id")}
+
+    # Activity log
+    _log_activity(db, "email_sent", "lead", str(lead_id), f"Email an {lead.email}: {draft.get('subject', '')[:80]}")
+
+    _logger.info(f"Email sent successfully to {lead.email}, msg_id={send_result.get('msg_id')}, tracking_id={tracking_id}")
+    return {"success": True, "message_id": send_result.get("msg_id"), "tracking_id": tracking_id}
 
 
 # ─── Send All Approved ────────────────────────────────────────

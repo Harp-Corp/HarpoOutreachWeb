@@ -1,9 +1,11 @@
 # SMTP Email Service – sends emails via Hostinger SMTP (replaces Gmail API sending)
 # Keeps Gmail API for reading replies/bounces only.
+# v2.0: Added tracking pixel injection + click wrapping
 from __future__ import annotations
 
 import base64
 import logging
+import re
 import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
@@ -14,16 +16,47 @@ from uuid import uuid4
 logger = logging.getLogger("harpo.smtp")
 
 
+def _inject_tracking(html: str, tracking_id: str | None, backend_url: str = "") -> str:
+    """Inject tracking pixel and wrap links for click tracking."""
+    if not tracking_id or not backend_url:
+        return html
+
+    # 1. Inject open-tracking pixel before </body>
+    pixel_url = f"{backend_url}/api/tracking/pixel/{tracking_id}.png"
+    pixel_tag = f'<img src="{pixel_url}" width="1" height="1" style="display:none;width:1px;height:1px;" alt="" />'
+    if "</body>" in html:
+        html = html.replace("</body>", f"{pixel_tag}\n</body>")
+    else:
+        html += pixel_tag
+
+    # 2. Wrap links for click tracking (skip mailto:, tel:, unsubscribe, and tracking URLs)
+    def wrap_link(match):
+        url = match.group(1)
+        # Don't wrap mailto, tel, unsubscribe links, or our own tracking URLs
+        if any(skip in url.lower() for skip in ["mailto:", "tel:", "unsubscribe", "/tracking/", backend_url]):
+            return match.group(0)
+        tracked_url = f"{backend_url}/api/tracking/click/{tracking_id}?url={url}"
+        return f'href="{tracked_url}"'
+
+    html = re.sub(r'href="(https?://[^"]+)"', wrap_link, html)
+
+    return html
+
+
 def _build_mime_email(
     to: str,
     from_addr: str,
     subject: str,
     body: str,
     reply_to: str | None = None,
+    tracking_id: str | None = None,
+    backend_url: str = "",
 ) -> MIMEMultipart:
     """Build a multipart/alternative MIME email with plain text + HTML (professional signature).
     Includes X-Harpo-Campaign header for campaign tracking.
-    reply_to: if set, adds Reply-To header so replies go to a specific inbox."""
+    reply_to: if set, adds Reply-To header so replies go to a specific inbox.
+    tracking_id: if set, injects open-tracking pixel and click-tracking links.
+    backend_url: backend base URL for tracking endpoints."""
 
     # Unsubscribe footer – uses the sender domain's info address
     from_domain = from_addr.split("@")[1] if "@" in from_addr else "harpocrates-corp.com"
@@ -72,6 +105,10 @@ def _build_mime_email(
 </body>
 </html>"""
 
+    # Inject tracking if available
+    if tracking_id and backend_url:
+        html = _inject_tracking(html, tracking_id, backend_url)
+
     # Build MIME message
     msg = MIMEMultipart("alternative")
     msg["From"] = f"Martin Foerster <{from_addr}>"
@@ -104,14 +141,23 @@ def send_email(
     smtp_user: str,
     smtp_password: str,
     reply_to: str | None = None,
+    tracking_id: str | None = None,
+    backend_url: str = "",
 ) -> dict:
     """Send an email via SMTP (Hostinger). Returns dict with 'msg_id'.
-    
+
     This is synchronous — smtplib is blocking. Called from async routes
     via asyncio.to_thread() or run_in_executor().
+    tracking_id: if provided, injects open/click tracking into the HTML.
+    backend_url: base URL of backend for tracking pixel/click endpoints.
     """
-    msg = _build_mime_email(to, from_addr, subject, body, reply_to=reply_to)
-    
+    msg = _build_mime_email(
+        to, from_addr, subject, body,
+        reply_to=reply_to,
+        tracking_id=tracking_id,
+        backend_url=backend_url,
+    )
+
     # Generate a unique message ID for tracking
     msg_id = f"harpo-{uuid4().hex[:12]}@{from_addr.split('@')[1]}"
     msg["Message-ID"] = f"<{msg_id}>"
@@ -122,11 +168,10 @@ def send_email(
         if smtp_port == 465:
             # SSL connection
             with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as smtp:
-                # Handle non-ASCII passwords via AUTH LOGIN
                 smtp.ehlo()
                 _smtp_login(smtp, smtp_user, smtp_password)
                 smtp.sendmail(from_addr, [to], msg.as_string())
-                logger.info(f"Email sent via SMTP to {to}, msg_id={msg_id}")
+                logger.info(f"Email sent via SMTP to {to}, msg_id={msg_id}, tracking={tracking_id or 'none'}")
         elif smtp_port == 587:
             # STARTTLS connection
             with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as smtp:
@@ -135,7 +180,7 @@ def send_email(
                 smtp.ehlo()
                 _smtp_login(smtp, smtp_user, smtp_password)
                 smtp.sendmail(from_addr, [to], msg.as_string())
-                logger.info(f"Email sent via SMTP to {to}, msg_id={msg_id}")
+                logger.info(f"Email sent via SMTP to {to}, msg_id={msg_id}, tracking={tracking_id or 'none'}")
         else:
             raise ValueError(f"Unsupported SMTP port: {smtp_port}. Use 465 (SSL) or 587 (STARTTLS).")
     except smtplib.SMTPAuthenticationError as e:
@@ -143,7 +188,7 @@ def send_email(
         raise PermissionError(f"SMTP-Authentifizierung fehlgeschlagen: {e}")
     except smtplib.SMTPRecipientsRefused as e:
         logger.error(f"Recipient refused {to}: {e}")
-        raise Exception(f"Empfänger abgelehnt: {to}")
+        raise Exception(f"Empfaenger abgelehnt: {to}")
     except smtplib.SMTPException as e:
         logger.error(f"SMTP error sending to {to}: {e}")
         raise Exception(f"SMTP-Fehler: {e}")
