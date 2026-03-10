@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import harpoLogo from './assets/logo.webp'
+import { Phase2Panel } from './Phase2Sections.jsx'
 
 const API = '/api'
 
@@ -2409,6 +2410,13 @@ function App() {
               <p className="sub" style={{fontSize:'0.65rem',marginTop:'0.5rem'}}>Posting-Strategie: Versucht zuerst als Organisation (w_organization_social), dann als Person (w_member_social). Person URN als Fallback eintragen.</p>
             </div>
 
+            {/* ── Phase 2: Advanced Features ── */}
+            <div className="card">
+              <h2>Erweiterte Funktionen</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Warmup, Sender Pool, Tracking, Team-Verwaltung, A/B Tests</p>
+              <Phase2Panel fetchJson={fetchJson} showSuccess={showSuccess} setError={setError} startLoading={startLoading} stopLoading={stopLoading} loading={loading} />
+            </div>
+
             <div className="card">
               <h2>Daten verwalten</h2>
               <p className="sub" style={{marginBottom:'0.75rem'}}>Export und Import deiner Outreach-Daten.</p>
@@ -2422,7 +2430,7 @@ function App() {
             <div className="card">
               <h2>Info</h2>
               <div style={{display:'flex',flexDirection:'column',gap:'0.25rem',fontSize:'0.8125rem',color:'#6b7280'}}>
-                <span>Harpocrates Outreach — v2.1</span>
+                <span>Harpocrates Outreach — v2.0</span>
                 <span>Frontend: React (Vite) · Backend: FastAPI (Cloud Run)</span>
                 <span>KI-Recherche: Perplexity Sonar Pro</span>
               </div>
