@@ -144,7 +144,7 @@ function App() {
     else if (section === 'addressbook') { loadAddressBook(); loadLeads(); loadSentEmails() }
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts() }
-    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics() }
+    else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics(); loadPosts() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
 
@@ -1992,6 +1992,65 @@ function App() {
                 )}
               </div>
             )}
+
+            {/* LinkedIn Publishing Pipeline */}
+            {(() => {
+              const published = posts.filter(p => p.is_published)
+              const pending = posts.filter(p => p.publish_pending && !p.is_published)
+              const drafts = posts.filter(p => !p.is_published && !p.publish_pending)
+              const scored = posts.filter(p => p.verification_score != null)
+              const postbar = scored.filter(p => p.verification_score >= 0.9)
+              const nichtPostbar = scored.filter(p => p.verification_score < 0.9)
+              return (
+                <div className="card" style={{border:'1px solid #bae6fd',background:'linear-gradient(135deg,#f0f9ff 0%,#fff 100%)'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.5rem'}}>
+                    <h2 style={{margin:0,color:'#0c4a6e'}}>LinkedIn Publishing-Pipeline</h2>
+                    <div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}>
+                      <span style={{fontSize:'0.7rem',color:'#6b7280'}}>Auto-Publisher: Stündlich um :50</span>
+                      <span style={{width:8,height:8,borderRadius:'50%',background:pending.length > 0 ? '#f59e0b' : '#22c55e',display:'inline-block'}} />
+                    </div>
+                  </div>
+                  <div className="stats-grid" style={{marginTop:'0.75rem'}}>
+                    <div className="stat-card"><div className="stat-val">{posts.length}</div><div className="stat-lbl">Posts gesamt</div></div>
+                    <div className="stat-card" style={pending.length > 0 ? {borderColor:'#f59e0b',background:'#fffbeb'} : {}}><div className="stat-val">{pending.length}</div><div className="stat-lbl">In Warteschlange</div></div>
+                    <div className="stat-card" style={published.length > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{published.length}</div><div className="stat-lbl">Veröffentlicht</div></div>
+                    <div className="stat-card"><div className="stat-val">{drafts.length}</div><div className="stat-lbl">Entwürfe</div></div>
+                    <div className="stat-card" style={postbar.length > 0 ? {borderColor:'#22c55e'} : {}}><div className="stat-val">{postbar.length}</div><div className="stat-lbl">Postbar (≥90%)</div></div>
+                    <div className="stat-card" style={nichtPostbar.length > 0 ? {borderColor:'#ef4444'} : {}}><div className="stat-val">{nichtPostbar.length}</div><div className="stat-lbl">Nicht postbar</div></div>
+                  </div>
+                  {/* Post detail list */}
+                  <div style={{marginTop:'1rem',display:'flex',flexDirection:'column',gap:'0.5rem'}}>
+                    {posts.map(p => {
+                      const status = p.is_published ? 'published' : p.publish_pending ? 'pending' : 'draft'
+                      const colors = { published: {bg:'#f0fdf4',border:'#bbf7d0',badge:'#22c55e',label:'Veröffentlicht'}, pending: {bg:'#fffbeb',border:'#fde68a',badge:'#f59e0b',label:'Warteschlange'}, draft: {bg:'#f9fafb',border:'#e5e7eb',badge:'#9ca3af',label:'Entwurf'} }
+                      const c = colors[status]
+                      const score = p.verification_score != null ? Math.round(p.verification_score * 100) : null
+                      const scoreColor = score != null ? (score >= 90 ? '#22c55e' : score >= 70 ? '#f59e0b' : '#ef4444') : '#9ca3af'
+                      return (
+                        <div key={p.id} style={{display:'flex',alignItems:'center',gap:'0.75rem',padding:'0.6rem 0.75rem',background:c.bg,border:`1px solid ${c.border}`,borderRadius:'0.5rem',fontSize:'0.85rem'}}>
+                          <span style={{width:8,height:8,borderRadius:'50%',background:c.badge,flexShrink:0}} />
+                          <div style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.content?.substring(0, 80)}…</div>
+                          <div style={{display:'flex',alignItems:'center',gap:'0.5rem',flexShrink:0}}>
+                            {score != null && <span style={{fontSize:'0.7rem',fontWeight:600,color:scoreColor}}>{score}%</span>}
+                            <span className={`badge ${status === 'published' ? 'badge-green' : status === 'pending' ? 'badge-yellow' : ''}`} style={{fontSize:'0.65rem'}}>{c.label}</span>
+                            <span style={{fontSize:'0.7rem',color:'#6b7280',whiteSpace:'nowrap'}}>{p.published_at ? new Date(p.published_at).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : p.created_date ? new Date(p.created_date).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {/* Cron info */}
+                  <div style={{marginTop:'0.75rem',paddingTop:'0.75rem',borderTop:'1px solid #e0f2fe',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.5rem'}}>
+                    <div style={{fontSize:'0.75rem',color:'#6b7280'}}>
+                      Automatische Veröffentlichung via Cron (stündlich, Minute :50) als <strong>Harpocrates Solutions GmbH</strong>
+                    </div>
+                    <div style={{fontSize:'0.7rem',color:'#9ca3af'}}>
+                      Nächster Lauf: {(() => { const now = new Date(); const next = new Date(now); next.setMinutes(50, 0, 0); if (now.getMinutes() >= 50) next.setHours(next.getHours() + 1); return next.toLocaleString('de-DE', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}) })()}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* LinkedIn Post Analytics */}
             <div className="card">
