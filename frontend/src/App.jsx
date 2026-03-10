@@ -1167,6 +1167,7 @@ function App() {
                     <div className="card-header"><h2>Unternehmen ({companies.length})</h2>
                       <div className="card-actions">
                         {companies.length > 0 && <button className="btn btn-ghost" onClick={() => exportCSV('companies')}>CSV</button>}
+                        {companies.length > 0 && <button className="btn btn-secondary" disabled={loading} onClick={async () => { setLoading(true); setLoadingMsg('Compliance-Scores werden berechnet...'); try { const r = await fetch(`${API}/prospecting/compute-compliance-scores`, {method:'POST'}); const d = await r.json(); if (d.success) { setSuccessMsg(`${d.updated} Companies bewertet`); loadData() } else { setError('Fehler bei Score-Berechnung') } } catch(e) { setError(e.message) } finally { setLoading(false); setLoadingMsg('') } }}>⚖️ Compliance</button>}
                         {companies.length > 0 && <button className="btn btn-secondary" disabled={loading} onClick={findAllContacts}>Alle Kontakte</button>}
                       </div>
                     </div>
@@ -1182,9 +1183,7 @@ function App() {
                                   ⚖️ {Math.round(c.compliance_score * 100)}%
                                 </span>
                               )}
-                              {c.key_regulations && c.key_regulations.split(',').map(r => r.trim()).filter(Boolean).map(reg => (
-                                <span key={reg} className="badge badge-blue" style={{fontSize:'0.55rem',padding:'1px 4px'}}>{reg}</span>
-                              ))}
+                              {c.key_regulations && (() => { const regs = c.key_regulations.split(',').map(r => r.trim()).filter(Boolean); return (<>{regs.slice(0,4).map(reg => (<span key={reg} className="badge badge-blue" style={{fontSize:'0.55rem',padding:'1px 4px'}}>{reg}</span>))}{regs.length > 4 && <span className="badge badge-gray" style={{fontSize:'0.55rem',padding:'1px 4px'}}>+{regs.length-4}</span>}</>)})()}
                             </span>
                           )}
                         </div>
