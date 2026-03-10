@@ -942,6 +942,24 @@ function App() {
     stopLoading()
   }
 
+  // ─── Live Countdown Timer for Cron Publish ────────────
+  const [cronCountdown, setCronCountdown] = useState('')
+  useEffect(() => {
+    const calcCountdown = () => {
+      const now = new Date()
+      const next = new Date(now)
+      next.setMinutes(50, 0, 0)
+      if (now.getMinutes() >= 50) next.setHours(next.getHours() + 1)
+      const diff = Math.max(0, Math.floor((next - now) / 1000))
+      const m = Math.floor(diff / 60)
+      const s = diff % 60
+      return `${m}:${s.toString().padStart(2, '0')}`
+    }
+    setCronCountdown(calcCountdown())
+    const iv = setInterval(() => setCronCountdown(calcCountdown()), 1000)
+    return () => clearInterval(iv)
+  }, [])
+
   const menuItems = [
     { id: 'overview', icon: '📋', label: 'Übersicht' },
     { id: 'search', icon: '🔍', label: 'Suche' },
@@ -1834,7 +1852,7 @@ function App() {
                       {p.is_published ? (
                         <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
                       ) : p.publish_pending ? (
-                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange …</span>
+                        <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange — <span style={{fontFamily:'monospace'}}>⏱ {cronCountdown}</span></span>
                         <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem',color:'#ef4444'}} onClick={() => cancelPublish(p.id)}>Abbrechen</button></>
                       ) : (
                         <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Auf LinkedIn posten</button>
@@ -2125,7 +2143,7 @@ function App() {
                   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.5rem'}}>
                     <h2 style={{margin:0,color:'#0c4a6e'}}>LinkedIn Publishing-Pipeline</h2>
                     <div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}>
-                      <span style={{fontSize:'0.7rem',color:'#6b7280'}}>Auto-Publisher: Stündlich um :50</span>
+                      <span style={{fontSize:'0.7rem',color:'#6b7280',display:'flex',alignItems:'center',gap:'0.375rem'}}>Auto-Publisher <span style={{fontFamily:'monospace',fontWeight:600,color: cronCountdown.startsWith('0:') ? '#f59e0b' : '#6b7280',background:'#f3f4f6',padding:'1px 6px',borderRadius:'0.25rem',fontSize:'0.75rem'}}>⏱ {cronCountdown}</span></span>
                       <span style={{width:8,height:8,borderRadius:'50%',background:pending.length > 0 ? '#f59e0b' : '#22c55e',display:'inline-block'}} />
                     </div>
                   </div>
@@ -2163,8 +2181,10 @@ function App() {
                     <div style={{fontSize:'0.75rem',color:'#6b7280'}}>
                       Automatische Veröffentlichung via Cron (stündlich, Minute :50) als <strong>Harpocrates Solutions GmbH</strong>
                     </div>
-                    <div style={{fontSize:'0.7rem',color:'#9ca3af'}}>
-                      Nächster Lauf: {(() => { const now = new Date(); const next = new Date(now); next.setMinutes(50, 0, 0); if (now.getMinutes() >= 50) next.setHours(next.getHours() + 1); return next.toLocaleString('de-DE', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}) })()}
+                    <div style={{fontSize:'0.7rem',color:'#9ca3af',display:'flex',alignItems:'center',gap:'0.375rem'}}>
+                      Nächster Lauf in <span style={{fontFamily:'monospace',fontWeight:600,color:cronCountdown.startsWith('0:') ? '#f59e0b' : '#6b7280'}}>{cronCountdown}</span>
+                      <span style={{color:'#d1d5db'}}>·</span>
+                      {(() => { const now = new Date(); const next = new Date(now); next.setMinutes(50, 0, 0); if (now.getMinutes() >= 50) next.setHours(next.getHours() + 1); return next.toLocaleString('de-DE', {hour:'2-digit',minute:'2-digit'}) })()} Uhr
                     </div>
                   </div>
                 </div>
