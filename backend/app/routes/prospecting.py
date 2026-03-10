@@ -804,3 +804,69 @@ async def score_leads(db: Session = Depends(get_db)):
 
     db.commit()
     return {"success": True, "scored": scored}
+
+
+@router.post("/compute-compliance-scores")
+async def compute_compliance_scores(db: Session = Depends(get_db)):
+    """Compute compliance_score and key_regulations for all companies based on their industry/description.
+    Uses industry keywords to determine applicable EU regulations."""
+    from ..models.db import CompanyDB
+    companies = db.query(CompanyDB).all()
+    updated = 0
+
+    # Mapping: regulation -> keywords that trigger it
+    regulation_triggers = {
+        "DORA": ["bank", "finanz", "financial", "insurance", "versicher", "payment", "zahlungs",
+                 "investment", "asset management", "kapitalverwalt", "credit", "kredit", "wertpapier",
+                 "securities", "brokerage", "trading", "exchange", "börse", "leasing", "factoring",
+                 "fund", "fonds", "wealth", "private banking", "custody", "depot", "pension", "rente"],
+        "GDPR": ["bank", "finanz", "financial", "insurance", "versicher", "health", "gesundheit",
+                 "tech", "software", "data", "cloud", "digital", "telecom", "payment", "e-commerce",
+                 "marketing", "hr", "human resource", "crm", "saas"],
+        "NIS2": ["bank", "finanz", "financial", "energy", "energie", "transport", "health", "gesundheit",
+                 "telecom", "digital", "cloud", "infrastructure", "water", "wasser", "waste", "abfall",
+                 "space", "post", "food", "lebensmittel", "ict", "dns"],
+        "MiFID II": ["investment", "wertpapier", "securities", "brokerage", "trading", "asset management",
+                     "kapitalverwalt", "portfolio", "advisory", "beratung", "wealth"],
+        "PSD2": ["payment", "zahlungs", "fintech", "e-money", "transfer", "acquir"],
+        "AMLD": ["bank", "finanz", "financial", "payment", "zahlungs", "crypto", "gambling",
+                 "real estate", "immobil", "notary", "lawyer", "accountant", "audit", "trust"],
+        "MiCA": ["crypto", "blockchain", "digital asset", "token", "defi", "exchange"],
+        "Solvency II": ["insurance", "versicher", "reinsurance", "rückversicher", "pension"],
+        "CRD/CRR": ["bank", "credit", "kredit", "capital", "kapital", "savings", "spar"],
+        "MaRisk": ["bank", "finanz", "financial", "kredit", "credit", "kapitalverwalt",
+                   "investment", "versicher", "insurance", "wertpapier"],
+        "CSRD": ["bank", "finanz", "financial", "insurance", "versicher", "energy", "energie",
+                 "manufacturing", "produktion", "large"],
+        "EBA Guidelines": ["bank", "credit", "kredit", "payment", "zahlungs", "e-money"],
+        "BaFin": ["bank", "finanz", "financial", "insurance", "versicher", "wertpapier",
+                  "kapitalverwalt", "investment", "payment", "zahlungs"],
+        "eIDAS": ["digital identity", "trust service", "electronic signature", "digital", "fintech"],
+    }
+
+    for company in companies:
+        # Combine all text fields for matching
+        text = " ".join([
+            company.name or "",
+            company.industry or "",
+            company.description or "",
+            company.nace_code or ""
+        ]).lower()
+
+        matched_regs = []
+        for reg, keywords in regulation_triggers.items():
+            if any(kw in text for kw in keywords):
+                matched_regs.append(reg)
+
+        # Compute score: 0.0-1.0, scaled so 4+ regulations = 1.0
+        if matched_regs:
+            comp_score = min(len(matched_regs) / 4.0, 1.0)
+        else:
+            comp_score = 0.1  # minimum for unknown companies
+
+        company.compliance_score = round(comp_score, 2)
+        company.key_regulations = ", ".join(matched_regs)
+        updated += 1
+
+    db.commit()
+    return {"success": True, "updated": updated, "message": f"{updated} Companies mit Compliance-Score aktualisiert"}
