@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .models.db import SessionLocal, init_db
 from .routes import auth, data, email_pipeline, prospecting, analytics, campaigns
+from .routes import phase2 as phase2_routes
 from .services import database_service as db_svc
 
 logging.basicConfig(
@@ -21,7 +22,7 @@ logger = logging.getLogger("harpo.main")
 app = FastAPI(
     title="HarpoOutreach Web",
     description="B2B Compliance Outreach Platform – Web API",
-    version="1.1.0",
+    version="2.0.0",
 )
 
 # CORS
@@ -45,6 +46,7 @@ app.include_router(email_pipeline.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(campaigns.router, prefix="/api")
+app.include_router(phase2_routes.router, prefix="/api")
 
 
 def _seed_settings():
@@ -82,14 +84,23 @@ def _seed_settings():
         db.close()
 
 
+def _init_phase2_tables():
+    """Create Phase 2 tables (warmup, sender pool, tracking, users, ab tests, sequences)."""
+    from .models.db import engine, Base
+    from .models import db_phase2  # noqa: F401 — import so models are registered
+    Base.metadata.create_all(bind=engine)
+    logger.info("Phase 2 tables initialized")
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
     logger.info("Database initialized")
+    _init_phase2_tables()
     _seed_settings()
     logger.info("Settings seeding complete — app ready")
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "HarpoOutreach Web"}
+    return {"status": "ok", "service": "HarpoOutreach Web", "version": "2.0.0"}
