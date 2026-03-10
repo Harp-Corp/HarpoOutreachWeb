@@ -518,7 +518,7 @@ function App() {
   }
 
   const generatePost = async (topic, platform) => {
-    startLoading('Post wird generiert + Cross-Check l\u00e4uft...'); setError('')
+    startLoading('Post wird generiert + Cross-Check l\u00e4uft (kann bis zu 3 Min. dauern bei Auto-Regenerierung)...'); setError('')
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000)
