@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
-from passlib.context import CryptContext
+import bcrypt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -30,8 +30,16 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 MAX_USERS = 10
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing — using bcrypt directly (passlib incompatible with bcrypt>=4.1)
+def _hash_password(password: str) -> str:
+    """Hash a password with bcrypt. Truncates to 72 bytes (bcrypt limit)."""
+    pw_bytes = password.encode('utf-8')[:72]
+    return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode('utf-8')
+
+def _verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    pw_bytes = password.encode('utf-8')[:72]
+    return bcrypt.checkpw(pw_bytes, hashed.encode('utf-8'))
 
 
 def _set_session_cookie(response, user_id: str, email: str, role: str):
@@ -185,7 +193,7 @@ async def email_login(body: EmailLoginBody, db: Session = Depends(get_db)):
     if not user.password_hash:
         raise HTTPException(401, "Für dieses Konto ist kein Passwort hinterlegt. Bitte mit Google anmelden oder den Admin bitten, ein Passwort zu setzen.")
 
-    if not pwd_context.verify(body.password, user.password_hash):
+    if not _verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Ungültige Anmeldedaten.")
 
     # Update last login
@@ -215,13 +223,13 @@ async def set_own_password(body: SetPasswordBody, user: dict = Depends(get_curre
 
     # If user already has a password, require old password
     if db_user.password_hash and body.current_password:
-        if not pwd_context.verify(body.current_password, db_user.password_hash):
+        if not _verify_password(body.current_password, db_user.password_hash):
             raise HTTPException(400, "Aktuelles Passwort ist falsch.")
 
     if len(body.new_password) < 8:
         raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
 
-    db_user.password_hash = pwd_context.hash(body.new_password)
+    db_user.password_hash = _hash_password(body.new_password)
     db.commit()
     return {"success": True, "message": "Passwort gesetzt."}
 
@@ -336,7 +344,7 @@ async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db
             existing.is_active = True
             existing.role = body.role
             if body.password and len(body.password) >= 8:
-                existing.password_hash = pwd_context.hash(body.password)
+                existing.password_hash = _hash_password(body.password)
             db.commit()
             return {"success": True, "data": {"id": str(existing.id), "email": existing.email, "role": existing.role}, "reactivated": True}
         raise HTTPException(400, f"Benutzer {email} existiert bereits.")
@@ -345,7 +353,7 @@ async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db
     if body.password:
         if len(body.password) < 8:
             raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
-        pw_hash = pwd_context.hash(body.password)
+        pw_hash = _hash_password(body.password)
 
     user = UserDB(
         id=uuid4(),
@@ -377,7 +385,7 @@ async def admin_set_password(user_id: str, body: AdminSetPasswordBody, admin: di
     if len(body.password) < 8:
         raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
 
-    user.password_hash = pwd_context.hash(body.password)
+    user.password_hash = _hash_password(body.password)
     db.commit()
     logger.info(f"Password set for {user.email} by admin {admin['email']}")
     return {"success": True, "message": f"Passwort für {user.email} gesetzt."}
@@ -417,3 +425,4 @@ async def update_user_role(user_id: str, body: dict, admin: dict = Depends(requi
         user.name = body["name"]
     db.commit()
     return {"success": True}
+
