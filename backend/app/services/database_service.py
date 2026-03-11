@@ -572,28 +572,39 @@ def get_campaign_template(db: Session, template_id: UUID) -> Optional[CampaignTe
 # ─── Dashboard Stats ─────────────────────────────────────────────
 
 def get_dashboard_stats(db: Session) -> dict:
-    leads = db.query(LeadDB).all()
-    total = len(leads)
-    sent = sum(1 for l in leads if l.date_email_sent is not None)
-    replied = sum(1 for l in leads if l.reply_received and l.reply_received.strip())
+    # Use SQL aggregations instead of loading all rows into memory
+    total = db.query(func.count(LeadDB.id)).scalar() or 0
+    sent = db.query(func.count(LeadDB.id)).filter(LeadDB.date_email_sent.isnot(None)).scalar() or 0
+    replied = db.query(func.count(LeadDB.id)).filter(
+        LeadDB.reply_received.isnot(None),
+        LeadDB.reply_received != "",
+    ).scalar() or 0
     rate = (replied / sent * 100) if sent > 0 else 0.0
 
+    # Status counts via group_by
     by_status: dict[str, int] = {}
-    by_industry: dict[str, int] = {}
-    for l in leads:
-        by_status[l.status] = by_status.get(l.status, 0) + 1
+    status_rows = db.query(LeadDB.status, func.count(LeadDB.id)).group_by(LeadDB.status).all()
+    for status, count in status_rows:
+        by_status[status] = count
 
-    companies = db.query(CompanyDB).all()
-    company_industry = {c.name.lower(): c.industry for c in companies}
-    for l in leads:
-        ind = company_industry.get(l.company.lower(), "Unknown")
-        by_industry[ind] = by_industry.get(ind, 0) + 1
+    # Industry counts: need to join leads with companies
+    by_industry: dict[str, int] = {}
+    industry_rows = (
+        db.query(CompanyDB.industry, func.count(LeadDB.id))
+        .outerjoin(CompanyDB, func.lower(LeadDB.company) == func.lower(CompanyDB.name))
+        .group_by(CompanyDB.industry)
+        .all()
+    )
+    for industry, count in industry_rows:
+        by_industry[industry or "Unknown"] = count
 
     # Address book count
-    ab_count = db.query(AddressBookDB).count()
+    ab_count = db.query(func.count(AddressBookDB.id)).scalar() or 0
 
     # Campaign counts
-    in_campaign = sum(1 for l in leads if getattr(l, "campaign_sequence_json", None))
+    in_campaign = db.query(func.count(LeadDB.id)).filter(
+        LeadDB.campaign_sequence_json.isnot(None),
+    ).scalar() or 0
 
     return {
         "total_leads": total,

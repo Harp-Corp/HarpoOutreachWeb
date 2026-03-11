@@ -1,8 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import DOMPurify from 'dompurify'
 import harpoLogo from './assets/logo.webp'
 import { Phase2Panel } from './Phase2Sections.jsx'
 
 const API = '/api'
+
+const formatDate = (d) => {
+    if (!d) return '—';
+    try { return new Date(d).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) }
+    catch { return d }
+};
+const formatDateTime = (d) => {
+    if (!d) return '—';
+    try { return new Date(d).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+    catch { return d }
+};
 
 function App() {
   const [section, setSection] = useState('overview')
@@ -82,6 +94,25 @@ function App() {
   const [selRegions, setSelRegions] = useState([])
   const [selSizes, setSelSizes] = useState([])
 
+  // Post generator state (replaces document.getElementById)
+  const [postTopic, setPostTopic] = useState('Regulatory Update')
+  const [postCustomTopic, setPostCustomTopic] = useState('')
+  const [tueTopic, setTueTopic] = useState('Regulatory Update')
+  const [friTopic, setFriTopic] = useState('Compliance Tip')
+
+  // Address book pagination
+  const [abDisplayLimit, setAbDisplayLimit] = useState(50)
+
+  // Sent emails filter + search
+  const [sentEmailFilter, setSentEmailFilter] = useState('alle')
+  const [sentEmailSearch, setSentEmailSearch] = useState('')
+
+  // Companies search
+  const [companySearch, setCompanySearch] = useState('')
+
+  // Data load error banner
+  const [loadError, setLoadError] = useState('')
+
   const industries = [
     { value: 'K - Finanzdienstleistungen', label: 'Finanzdienstleistungen' },
     { value: 'Q - Gesundheitswesen', label: 'Gesundheitswesen' },
@@ -158,17 +189,22 @@ function App() {
   const startLoading = (msg) => { setLoading(true); setLoadingMsg(msg || 'Wird verarbeitet...'); setLoadingProgress(null) }
   const stopLoading = () => { setLoading(false); setLoadingMsg(''); setLoadingProgress(null) }
 
-  const loadDashboard = useCallback(async () => { try { const r = await fetchJson(`${API}/data/dashboard`); setStats(r.data) } catch {} }, [])
-  const loadCompanies = useCallback(async () => { try { const r = await fetchJson(`${API}/data/companies`); setCompanies(r.data || []) } catch {} }, [])
-  const loadLeads = useCallback(async () => { try { const r = await fetchJson(`${API}/data/leads`); setLeads(r.data || []) } catch {} }, [])
-  const loadPosts = useCallback(async () => { try { const r = await fetchJson(`${API}/data/social-posts`); setPosts(r.data || []) } catch {} }, [])
-  const loadContentCalendar = useCallback(async () => { try { const r = await fetchJson(`${API}/data/content-calendar`); setContentCalendar(r) } catch {} }, [])
-  const loadAddressBook = useCallback(async () => { try { const r = await fetchJson(`${API}/data/address-book`); setAddressBook(r.data || []) } catch {} }, [])
-  const loadSentEmails = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/sent-emails`); setSentEmails(r.data || []) } catch {} }, [])
-  const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch {} }, [])
-  const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch {} }, [])
+  const _handleLoadError = useCallback((e) => {
+    console.error('Load failed:', e)
+    if (e.message?.includes('401') || e.message?.includes('angemeldet') || e.message?.includes('Sitzung')) return
+    setLoadError('Daten konnten nicht geladen werden. Bitte Seite neu laden.')
+  }, [])
+  const loadDashboard = useCallback(async () => { try { const r = await fetchJson(`${API}/data/dashboard`); setStats(r.data) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadCompanies = useCallback(async () => { try { const r = await fetchJson(`${API}/data/companies`); setCompanies(r.data || []) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadLeads = useCallback(async () => { try { const r = await fetchJson(`${API}/data/leads`); setLeads(r.data || []) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadPosts = useCallback(async () => { try { const r = await fetchJson(`${API}/data/social-posts`); setPosts(r.data || []) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadContentCalendar = useCallback(async () => { try { const r = await fetchJson(`${API}/data/content-calendar`); setContentCalendar(r) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadAddressBook = useCallback(async () => { try { const r = await fetchJson(`${API}/data/address-book`); setAddressBook(r.data || []) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadSentEmails = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/sent-emails`); setSentEmails(r.data || []) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadAnalyticsSummary = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/summary`); setAnalyticsSummary(r.data || null) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
+  const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
   const loadLinkedinAnalytics = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/linkedin-posts`); setLinkedinAnalytics(r) } catch(e) { console.warn('LinkedIn analytics load failed:', e) } }, [])
-  const loadActivityLog = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/activity-log?limit=30`); setActivityLog(r.data || []) } catch {} }, [])
+  const loadActivityLog = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/activity-log?limit=30`); setActivityLog(r.data || []) } catch(e) { _handleLoadError(e) } }, [_handleLoadError])
 
   // ─── Team load functions ───────────────────────────────
   const loadTeamUsers = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/users`); setTeamUsers(r.data || []) } catch (e) { console.warn('loadTeamUsers:', e.message); setError('Team laden fehlgeschlagen: ' + e.message) } }, [])
@@ -216,14 +252,20 @@ function App() {
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard, loadTeamUsers, loadTeamActivity])
 
-  // Reset campaign wizard when entering campaign section
+  // Auto-dismiss loadError after 15 seconds
   useEffect(() => {
-    if (section === 'campaign') {
-      setCampStep(1); setCampSelected(new Set()); setCampLeads([])
-      setCampActiveLeadId(null); setCampDraftSubject(''); setCampDraftBody('')
-      setCampSendSelected(new Set()); setCampDrafting(false)
+    if (loadError) {
+      const t = setTimeout(() => setLoadError(''), 15000)
+      return () => clearTimeout(t)
     }
-  }, [section])
+  }, [loadError])
+
+  // Reset campaign wizard explicitly — NOT on section navigation
+  const resetCampaignWizard = useCallback(() => {
+    setCampStep(1); setCampSelected(new Set()); setCampLeads([])
+    setCampActiveLeadId(null); setCampDraftSubject(''); setCampDraftBody('')
+    setCampSendSelected(new Set()); setCampDrafting(false)
+  }, [])
 
   const toggle = (arr, setArr, val) => setArr(prev => prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val])
 
@@ -356,7 +398,7 @@ function App() {
     stopLoading()
   }
   const clearSearchResults = async () => {
-    if (!confirm('Alle Suchergebnisse wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.')) return
+    if (!confirm(`${companies.length} Unternehmen und ${leads.length} Kontakte werden gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.`)) return
     startLoading('Suchergebnisse werden gelöscht...'); setError('')
     try {
       await fetchJson(`${API}/data/companies`, { method: 'DELETE' })
@@ -586,14 +628,14 @@ function App() {
     startLoading('2 Posts für die Woche werden generiert + Cross-Check (kann bis zu 5 Min. dauern)...')
     setError('')
     try {
-      const tueTopic = document.getElementById('tueTopic')?.value || 'Regulatory Update'
-      const friTopic = document.getElementById('friTopic')?.value || 'Compliance Tip'
+      const tueTopic_ = tueTopic || 'Regulatory Update'
+      const friTopic_ = friTopic || 'Compliance Tip'
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 8 * 60 * 1000)
       const resp = await fetch(`${API}/data/social-posts/generate-weekly`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tuesday_topic: tueTopic, friday_topic: friTopic, week_offset: 0 }),
+        body: JSON.stringify({ tuesday_topic: tueTopic_, friday_topic: friTopic_, week_offset: 0 }),
         signal: controller.signal,
       })
       clearTimeout(timeout)
@@ -1225,6 +1267,7 @@ function App() {
             )}
           </div>
         </div>}
+        {loadError && <div className="msg" style={{background:'#fffbeb',border:'1px solid #fde68a',color:'#92400e',display:'flex',alignItems:'center',justifyContent:'space-between'}}>{loadError}<button className="btn btn-sm btn-ghost" onClick={() => { setLoadError(''); window.location.reload() }}>Neu laden</button></div>}
 
         {/* === UEBERSICHT ========================================= */}
         {section === 'overview' && (
@@ -1366,7 +1409,8 @@ function App() {
                         {companies.length > 0 && <button className="btn btn-secondary" disabled={loading} onClick={findAllContacts}>Alle Kontakte</button>}
                       </div>
                     </div>
-                    <div className="list">{companies.map(c => (
+                    {companies.length > 5 && <input type="text" placeholder="Unternehmen durchsuchen..." value={companySearch} onChange={e => setCompanySearch(e.target.value)} style={{width:'100%',padding:'0.5rem 0.75rem',border:'1px solid #e5e7eb',borderRadius:'0.375rem',marginBottom:'0.5rem',fontSize:'0.85rem'}} />}
+                    <div className="list">{companies.filter(c => !companySearch || c.name?.toLowerCase().includes(companySearch.toLowerCase()) || c.industry?.toLowerCase().includes(companySearch.toLowerCase()) || c.country?.toLowerCase().includes(companySearch.toLowerCase())).map(c => (
                       <div key={c.id} className="list-item">
                         <div className="list-main">
                           <strong>{c.name}</strong>
@@ -1618,7 +1662,7 @@ function App() {
                     const isBlocked = a.contact_status === 'blocked'
                     // Find matching sent email for last activity
                     const matchingSent = sentEmails.find(e => e.email?.toLowerCase() === a.email?.toLowerCase())
-                    const lastActivity = matchingSent?.reply_received ? 'Antwort' : matchingSent?.date_email_sent ? `Gesendet ${matchingSent.date_email_sent.split('T')[0]}` : null
+                    const lastActivity = matchingSent?.reply_received ? 'Antwort' : matchingSent?.date_email_sent ? `Gesendet ${formatDate(matchingSent.date_email_sent)}` : null
                           return (
                             <div key={a.id} className={`list-item ${isBlocked ? 'list-item-blocked' : ''}`} style={grouped ? {paddingLeft:'0.5rem'} : {}}>
                               <div className="list-main">
@@ -1654,7 +1698,12 @@ function App() {
                       </div>
                     ))
                   }
-                  return abFiltered.map(a => renderRow(a, false))
+                  return (<>
+                    {abFiltered.slice(0, abDisplayLimit).map(a => renderRow(a, false))}
+                    {abFiltered.length > abDisplayLimit && (
+                      <button className="btn btn-ghost" style={{width:'100%',marginTop:'0.5rem'}} onClick={() => setAbDisplayLimit(prev => prev + 50)}>Weitere anzeigen ({abFiltered.length - abDisplayLimit} übrig)</button>
+                    )}
+                  </>)
                 })()}
                 {addressBook.length === 0 && <div className="empty-cta"><p>Adressbuch ist leer.</p><button className="btn btn-secondary" onClick={() => setSection('search')}>Zur Suche →</button><span className="sub">Oder oben manuell eintragen.</span></div>}
                 {addressBook.length > 0 && addressBook.filter(a => abFilter === 'all' || (abFilter === 'active' ? (a.contact_status || 'active') === 'active' : a.contact_status === 'blocked')).length === 0 && <p className="empty">Keine Kontakte mit diesem Filter.</p>}
@@ -1679,7 +1728,10 @@ function App() {
 
             {seqView === 'wizard' && (
               <>
-                <WizardSteps />
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
+                  <WizardSteps />
+                  {campStep > 1 && <button className="btn btn-ghost btn-sm" onClick={resetCampaignWizard}>Neue Kampagne</button>}
+                </div>
 
                 {/* ── Step 1: Kontakte auswählen ── */}
                 {campStep === 1 && (
@@ -2014,24 +2066,24 @@ function App() {
                 <div style={{display:'flex',gap:'1rem',flexWrap:'wrap',marginBottom:'1rem'}}>
                   <div className="form-group" style={{flex:1,minWidth:'200px'}}>
                     <label>Dienstag-Post: Kategorie</label>
-                    <select id="tueTopic">
-                      <option value="Regulatory Update">Regulatory Update</option>
-                      <option value="Compliance Tip">Compliance Tip</option>
-                      <option value="Industry Insight">Industry Insight</option>
-                      <option value="Product Feature">Product Feature</option>
+                    <select value={tueTopic} onChange={e => setTueTopic(e.target.value)}>
+                      <option value="Regulatory Update">Regulatorisches Update</option>
+                      <option value="Compliance Tip">Compliance-Tipp</option>
+                      <option value="Industry Insight">Branchen-Einblick</option>
+                      <option value="Product Feature">Produkt-Feature</option>
                       <option value="Thought Leadership">Thought Leadership</option>
-                      <option value="Case Study">Case Study</option>
+                      <option value="Case Study">Fallstudie</option>
                     </select>
                   </div>
                   <div className="form-group" style={{flex:1,minWidth:'200px'}}>
                     <label>Freitag-Post: Kategorie</label>
-                    <select id="friTopic">
-                      <option value="Compliance Tip">Compliance Tip</option>
-                      <option value="Regulatory Update">Regulatory Update</option>
-                      <option value="Industry Insight">Industry Insight</option>
-                      <option value="Product Feature">Product Feature</option>
+                    <select value={friTopic} onChange={e => setFriTopic(e.target.value)}>
+                      <option value="Compliance Tip">Compliance-Tipp</option>
+                      <option value="Regulatory Update">Regulatorisches Update</option>
+                      <option value="Industry Insight">Branchen-Einblick</option>
+                      <option value="Product Feature">Produkt-Feature</option>
                       <option value="Thought Leadership">Thought Leadership</option>
-                      <option value="Case Study">Case Study</option>
+                      <option value="Case Study">Fallstudie</option>
                     </select>
                   </div>
                 </div>
@@ -2105,23 +2157,21 @@ function App() {
               <h2>Post generieren</h2>
               <div style={{display:'flex',gap:'0.5rem',alignItems:'end',flexWrap:'wrap'}}>
                 <div className="form-group" style={{flex:'0 0 180px'}}><label>Kategorie</label>
-                  <select id="postTopic" onChange={e => { if (e.target.value !== '__custom__') document.getElementById('postCustomTopic').value = '' }}>
-                    <option value="Regulatory Update">Regulatory Update</option>
-                    <option value="Compliance Tip">Compliance Tip</option>
-                    <option value="Industry Insight">Industry Insight</option>
-                    <option value="Product Feature">Product Feature</option>
+                  <select value={postTopic} onChange={e => { setPostTopic(e.target.value); if (e.target.value !== '__custom__') setPostCustomTopic('') }}>
+                    <option value="Regulatory Update">Regulatorisches Update</option>
+                    <option value="Compliance Tip">Compliance-Tipp</option>
+                    <option value="Industry Insight">Branchen-Einblick</option>
+                    <option value="Product Feature">Produkt-Feature</option>
                     <option value="Thought Leadership">Thought Leadership</option>
-                    <option value="Case Study">Case Study</option>
+                    <option value="Case Study">Fallstudie</option>
                     <option value="__custom__">Eigenes Thema...</option>
                   </select>
                 </div>
                 <div className="form-group" style={{flex:1,minWidth:'200px'}}><label>Eigenes Thema (optional)</label>
-                  <input id="postCustomTopic" placeholder="z.B. DORA Deadline März 2026, Digital Euro Update, NIS2..." onFocus={() => { document.getElementById('postTopic').value = '__custom__' }} />
+                  <input value={postCustomTopic} onChange={e => setPostCustomTopic(e.target.value)} placeholder="z.B. DORA Deadline März 2026, Digital Euro Update, NIS2..." onFocus={() => setPostTopic('__custom__')} />
                 </div>
                 <button className="btn btn-primary" disabled={loading} onClick={() => {
-                  const sel = document.getElementById('postTopic').value
-                  const custom = document.getElementById('postCustomTopic').value.trim()
-                  const topic = sel === '__custom__' && custom ? custom : sel === '__custom__' ? 'Regulatory Update' : sel
+                  const topic = postTopic === '__custom__' && postCustomTopic.trim() ? postCustomTopic.trim() : postTopic === '__custom__' ? 'Regulatory Update' : postTopic
                   generatePost(topic, 'LinkedIn')
                 }}>Generieren</button>
               </div>
@@ -2150,10 +2200,10 @@ function App() {
                         </span>
                       )}
                     </div>
-                    <div className="post-actions"><span className="sub">{p.created_date?.split('T')[0]}</span>
+                    <div className="post-actions"><span className="sub">{formatDate(p.created_date)}</span>
                       {p.verification_status !== 'checking' && <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem'}} disabled={loading} onClick={() => verifyPost(p.id)}>{p.verification_status === 'unverified' ? '🔍 Prüfen' : '🔄 Erneut prüfen'}</button>}
                       {p.is_published ? (
-                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${p.published_at.split('T')[0]}` : ''}</span>
+                        <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht{p.published_at ? ` ${formatDate(p.published_at)}` : ''}</span>
                       ) : p.publish_pending ? (
                         <><span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>Warteschlange — <span style={{fontFamily:'monospace'}}>⏱ {cronCountdown}</span></span>
                         <button className="btn btn-ghost btn-sm" style={{fontSize:'0.6rem',color:'#ef4444'}} onClick={() => cancelPublish(p.id)}>Abbrechen</button></>
@@ -2274,7 +2324,7 @@ function App() {
                       </div>
                     )
                   })()}
-                  <div className="post-content" dangerouslySetInnerHTML={{__html: renderPostContent(p.content)}} />
+                  <div className="post-content" dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(renderPostContent(p.content))}} />
                 </div>
               ))}{posts.length === 0 && <p className="empty">Noch keine Posts. Wähle oben eine Kategorie und klicke "Generieren".</p>}
             </div>
@@ -2483,8 +2533,8 @@ function App() {
               const pending = posts.filter(p => p.publish_pending && !p.is_published)
               const drafts = posts.filter(p => !p.is_published && !p.publish_pending)
               const scored = posts.filter(p => p.verification_score != null)
-              const postbar = scored.filter(p => p.verification_score >= 0.9)
-              const nichtPostbar = scored.filter(p => p.verification_score < 0.9)
+              const postbar = scored.filter(p => p.verification_score >= 0.9 && !p.verification?.claims?.some(c => c.verdict === 'false'))
+              const nichtPostbar = scored.filter(p => p.verification_score < 0.9 || p.verification?.claims?.some(c => c.verdict === 'false'))
               return (
                 <div className="card" style={{border:'1px solid #bae6fd',background:'linear-gradient(135deg,#f0f9ff 0%,#fff 100%)'}}>
                   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'0.5rem'}}>
@@ -2575,7 +2625,7 @@ function App() {
                           {linkedinAnalytics.data.map(p => (
                             <tr key={p.id} style={{borderBottom:'1px solid #f3f4f6'}}>
                               <td style={{padding:'0.5rem 0.5rem',maxWidth:'300px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.content}</td>
-                              <td style={{padding:'0.5rem',textAlign:'center',whiteSpace:'nowrap',color:'#6b7280'}}>{p.published_at?.split('T')[0] || '—'}</td>
+                              <td style={{padding:'0.5rem',textAlign:'center',whiteSpace:'nowrap',color:'#6b7280'}}>{formatDate(p.published_at)}</td>
                               {p.stats ? (
                                 <>
                                   <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.impressionCount?.toLocaleString('de-DE') || 0}</td>
@@ -2605,8 +2655,24 @@ function App() {
             {/* Sent Emails List */}
             <div className="card">
               <h2>Versendete E-Mails ({sentEmails.length})</h2>
+              {sentEmails.length > 0 && (
+                <div style={{marginBottom:'0.75rem'}}>
+                  <div className="filter-bar" style={{marginBottom:'0.5rem'}}>
+                    <button className={`btn btn-sm ${sentEmailFilter === 'alle' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSentEmailFilter('alle')}>Alle ({sentEmails.length})</button>
+                    <button className={`btn btn-sm ${sentEmailFilter === 'antwort' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSentEmailFilter('antwort')}>Antwort ({sentEmails.filter(e => e.reply_received && !e.reply_received.startsWith('[UNSUBSCRIBE]')).length})</button>
+                    <button className={`btn btn-sm ${sentEmailFilter === 'bounced' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSentEmailFilter('bounced')}>Bounced ({sentEmails.filter(e => e.delivery_status === 'Bounced').length})</button>
+                    <button className={`btn btn-sm ${sentEmailFilter === 'abgemeldet' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setSentEmailFilter('abgemeldet')}>Abgemeldet ({sentEmails.filter(e => e.opted_out).length})</button>
+                  </div>
+                  <input type="text" placeholder="E-Mails durchsuchen (Name, Firma, E-Mail)..." value={sentEmailSearch} onChange={e => setSentEmailSearch(e.target.value)} style={{width:'100%',padding:'0.5rem 0.75rem',border:'1px solid #e5e7eb',borderRadius:'0.375rem',fontSize:'0.85rem'}} />
+                </div>
+              )}
               {sentEmails.length === 0 && <div className="empty-cta"><p>Noch keine E-Mails versendet.</p><button className="btn btn-secondary" onClick={() => setSection('campaign')}>Kampagne starten →</button></div>}
-              {sentEmails.map(em => (
+              {sentEmails.filter(em => {
+                if (sentEmailFilter === 'antwort') return em.reply_received && !em.reply_received.startsWith('[UNSUBSCRIBE]')
+                if (sentEmailFilter === 'bounced') return em.delivery_status === 'Bounced'
+                if (sentEmailFilter === 'abgemeldet') return em.opted_out
+                return true
+              }).filter(em => !sentEmailSearch || em.name?.toLowerCase().includes(sentEmailSearch.toLowerCase()) || em.company?.toLowerCase().includes(sentEmailSearch.toLowerCase()) || em.email?.toLowerCase().includes(sentEmailSearch.toLowerCase())).map(em => (
                 <div key={em.id} style={{border:'1px solid #e5e7eb',borderRadius:'0.5rem',marginBottom:'0.75rem',overflow:'hidden'}}>
                   {/* Header row - clickable */}
                   <div
@@ -2627,7 +2693,7 @@ function App() {
                       {em.delivery_status === 'Bounced' && <span className="badge badge-red">Bounced</span>}
                       {em.delivery_status === 'Delivered' && <span className="badge badge-blue">Zugestellt</span>}
                       {!em.reply_received && !em.opted_out && em.delivery_status !== 'Bounced' && em.delivery_status !== 'Delivered' && <span className="badge">Gesendet</span>}
-                      <span className="sub" style={{fontSize:'0.7rem',whiteSpace:'nowrap'}}>{em.date_email_sent?.split('T')[0]}</span>
+                      <span className="sub" style={{fontSize:'0.7rem',whiteSpace:'nowrap'}}>{formatDate(em.date_email_sent)}</span>
                     </div>
                   </div>
                   {/* Expanded details */}

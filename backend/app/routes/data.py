@@ -19,7 +19,7 @@ from ..models.db import get_db
 from ..services import database_service as db_svc
 from ..services import perplexity_service as pplx
 from ..models.schemas import ContentTopic, SocialPlatform
-from ..services.auth_service import get_current_user, get_current_user_or_apikey
+from ..services.auth_service import get_current_user, get_current_user_or_apikey, require_admin
 from ..models.db_phase2 import ActivityLogDB
 
 router = APIRouter(prefix="/data", tags=["Data"])
@@ -1091,17 +1091,12 @@ async def add_to_blocklist(email: str, reason: str = "", user: dict = Depends(ge
 
 
 @router.delete("/blocklist/all")
-async def clear_blocklist(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Remove ALL entries from the blocklist (admin reset)."""
+async def clear_blocklist(admin: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    """Remove ALL entries from the blocklist (admin reset).
+    Does NOT reset lead opt-outs — GDPR opt-outs must be preserved."""
     from ..models.db import BlocklistDB
     count = db.query(BlocklistDB).count()
     db.query(BlocklistDB).delete()
-    # Also reset opted_out on all leads that were blocked
-    from ..models.db import LeadDB
-    db.query(LeadDB).filter(LeadDB.opted_out == True).update({
-        LeadDB.opted_out: False,
-        LeadDB.opt_out_date: None,
-    })
     db.commit()
     return {"success": True, "removed": count}
 
@@ -1120,7 +1115,7 @@ async def get_settings(user: dict = Depends(get_current_user), db: Session = Dep
     # Mask sensitive keys
     safe = {}
     for k, v in all_settings.items():
-        if k in ("perplexity_api_key", "google_client_secret", "google_access_token", "google_refresh_token", "linkedin_access_token"):
+        if k in ("perplexity_api_key", "google_client_secret", "google_access_token", "google_refresh_token", "linkedin_access_token", "smtp_password"):
             safe[k] = "***" if v else ""
         else:
             safe[k] = v

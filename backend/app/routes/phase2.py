@@ -217,7 +217,16 @@ async def tracking_pixel(tracking_id: str, db: Session = Depends(get_db)):
 
 @router.get("/tracking/click/{tracking_id}")
 async def tracking_click(tracking_id: str, url: str = Query(...), db: Session = Depends(get_db)):
-    """Click tracking redirect."""
+    """Click tracking redirect with URL validation to prevent open redirect."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    # Only allow http/https schemes — block javascript:, data:, vbscript:, etc.
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "Ungültiges URL-Schema. Nur http/https erlaubt.")
+    # Block localhost and private IPs
+    hostname = (parsed.hostname or "").lower()
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1") or hostname.startswith("10.") or hostname.startswith("192.168.") or hostname.startswith("172."):
+        raise HTTPException(400, "Ungültige Ziel-URL.")
     tracking.record_click(db, tracking_id, url)
     return RedirectResponse(url=url, status_code=302)
 

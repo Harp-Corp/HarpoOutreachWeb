@@ -8,11 +8,11 @@ import random
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..models.db import CampaignTemplateDB, CompanyDB, LeadDB, get_db
+from ..models.db import CampaignTemplateDB, CompanyDB, LeadDB, SessionLocal, get_db
 from ..services import database_service as db_svc
 from ..services import perplexity_service as pplx
 from ..services import smtp_service as smtp
@@ -384,6 +384,7 @@ async def campaign_status(user: dict = Depends(get_current_user), db: Session = 
         pending = sum(1 for s in sequence if s["status"] == "pending")
         drafted = sum(1 for s in sequence if s["status"] == "drafted")
         approved = sum(1 for s in sequence if s["status"] == "approved")
+        failed = sum(1 for s in sequence if s["status"] == "failed")
 
         # Find next action
         next_action = None
@@ -407,6 +408,7 @@ async def campaign_status(user: dict = Depends(get_current_user), db: Session = 
             "pending_steps": pending,
             "drafted_steps": drafted,
             "approved_steps": approved,
+            "failed_steps": failed,
             "current_step": lead.campaign_current_step,
             "is_paused": lead.campaign_paused,
             "has_reply": bool(lead.reply_received),
@@ -685,94 +687,98 @@ async def send_campaign_step(lead_id: UUID, step_num: int, user: dict = Depends(
 
 # ─── Send All Approved Steps (batch) ─────────────────────────────
 
+def _send_approved_steps_background(user: dict):
+    """Background task: send all approved campaign steps with rate limiting.
+    Uses its own DB session since FastAPI request session is closed."""
+    import time
+    db = SessionLocal()
+    try:
+        leads = db_svc.load_leads(db)
+        sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
+        reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+
+        for lead in leads:
+            if not lead.campaign_sequence_json or lead.campaign_paused:
+                continue
+            if lead.reply_received:
+                lead.campaign_paused = True
+                db.commit()
+                continue
+
+            sequence = json.loads(lead.campaign_sequence_json)
+            approved_step = None
+            for s in sequence:
+                if s["status"] == "approved":
+                    sched = s.get("scheduled_at", "")
+                    if sched:
+                        try:
+                            sched_dt = datetime.fromisoformat(sched)
+                            if sched_dt > datetime.utcnow():
+                                break
+                        except Exception:
+                            pass
+                    approved_step = s
+                    break
+
+            if not approved_step:
+                continue
+
+            if db_svc.is_blocked(db, lead.email):
+                lead.status = "Do Not Contact"
+                lead.opted_out = True
+                lead.campaign_paused = True
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                continue
+
+            try:
+                smtp_cfg = _get_smtp_config(db)
+                if not smtp_cfg["smtp_password"]:
+                    logger.error("SMTP password not configured, skipping batch send")
+                    break
+                send_result = smtp.send_email(
+                    to=lead.email, from_addr=sender,
+                    subject=approved_step["subject"], body=approved_step["body"],
+                    smtp_host=smtp_cfg["smtp_host"], smtp_port=smtp_cfg["smtp_port"],
+                    smtp_user=smtp_cfg["smtp_user"], smtp_password=smtp_cfg["smtp_password"],
+                    reply_to=reply_to,
+                )
+
+                approved_step["status"] = "sent"
+                approved_step["sent_at"] = datetime.utcnow().isoformat()
+                approved_step["msg_id"] = send_result.get("msg_id", "")
+                lead.campaign_sequence_json = json.dumps(sequence)
+
+                step_type = approved_step["type"]
+                if step_type == "initial":
+                    lead.status = "Email Sent"
+                    lead.date_email_sent = datetime.utcnow()
+                    lead.delivery_status = "Delivered"
+                    lead.gmail_thread_id = send_result.get("msg_id", "")
+                elif step_type.startswith("follow_up"):
+                    lead.status = "Follow-Up Sent"
+                    lead.date_follow_up_sent = datetime.utcnow()
+                elif step_type == "breakup":
+                    lead.status = "Breakup Sent"
+
+                lead.campaign_current_step = approved_step["step"]
+                lead.updated_at = datetime.utcnow()
+                db.commit()
+                _log_activity(db, "campaign_step_sent", "lead", str(lead.id), f"[Batch] Kampagne Schritt {approved_step['step']} ({step_type}) an {lead.email}", user=user)
+                logger.info(f"[BG] Campaign step {approved_step['step']} sent to {lead.email}")
+
+                # Rate limit: 30-90s between sends (synchronous sleep in background)
+                time.sleep(random.uniform(30, 90))
+
+            except Exception as e:
+                logger.error(f"[BG] Campaign send failed for {lead.email}: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/send-approved-steps")
-async def send_approved_steps(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Send all approved campaign steps that are due. Respects scheduling and rate limits.
-    This is the main batch send endpoint for campaign automation."""
-    leads = db_svc.load_leads(db)
-    sent = 0
-    failed = 0
-    skipped = 0
-    errors = []
-
-    sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
-    reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
-
-    for lead in leads:
-        if not lead.campaign_sequence_json or lead.campaign_paused:
-            continue
-        if lead.reply_received:
-            # Auto-pause on reply
-            lead.campaign_paused = True
-            db.commit()
-            continue
-
-        sequence = json.loads(lead.campaign_sequence_json)
-        approved_step = None
-        for s in sequence:
-            if s["status"] == "approved":
-                # Check if scheduled time has passed
-                sched = s.get("scheduled_at", "")
-                if sched:
-                    try:
-                        sched_dt = datetime.fromisoformat(sched)
-                        if sched_dt > datetime.utcnow():
-                            break  # Not time yet
-                    except Exception:
-                        pass
-                approved_step = s
-                break
-
-        if not approved_step:
-            skipped += 1
-            continue
-
-        if db_svc.is_blocked(db, lead.email):
-            lead.status = "Do Not Contact"
-            lead.opted_out = True
-            lead.campaign_paused = True
-            lead.updated_at = datetime.utcnow()
-            db.commit()
-            skipped += 1
-            continue
-
-        try:
-            send_result = await _send_step_via_smtp(
-                to=lead.email, from_addr=sender,
-                subject=approved_step["subject"], body=approved_step["body"],
-                db=db, reply_to=reply_to,
-            )
-
-            approved_step["status"] = "sent"
-            approved_step["sent_at"] = datetime.utcnow().isoformat()
-            approved_step["msg_id"] = send_result.get("msg_id", "")
-            lead.campaign_sequence_json = json.dumps(sequence)
-
-            step_type = approved_step["type"]
-            if step_type == "initial":
-                lead.status = "Email Sent"
-                lead.date_email_sent = datetime.utcnow()
-                lead.delivery_status = "Delivered"
-                lead.gmail_thread_id = send_result.get("msg_id", "")
-            elif step_type.startswith("follow_up"):
-                lead.status = "Follow-Up Sent"
-                lead.date_follow_up_sent = datetime.utcnow()
-            elif step_type == "breakup":
-                lead.status = "Breakup Sent"
-
-            lead.campaign_current_step = approved_step["step"]
-            lead.updated_at = datetime.utcnow()
-            db.commit()
-            sent += 1
-            _log_activity(db, "campaign_step_sent", "lead", str(lead.id), f"[Batch] Kampagne Schritt {approved_step['step']} ({step_type}) an {lead.email}", user=user)
-            logger.info(f"Campaign step {approved_step['step']} sent to {lead.email}")
-
-            # Rate limit: 30-90s between sends
-            await asyncio.sleep(random.uniform(30, 90))
-
-        except Exception as e:
-            logger.error(f"Campaign send failed for {lead.email}: {e}")
-            failed += 1
-            errors.append(f"{lead.name}: {str(e)[:100]}")
-
-    return {"success": True, "sent": sent, "failed": failed, "skipped": skipped, "errors": errors[:5]}
+async def send_approved_steps(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Queue batch send of all approved campaign steps as a background task.
+    Returns immediately — sends happen asynchronously with rate limiting."""
+    background_tasks.add_task(_send_approved_steps_background, user)
+    return {"success": True, "message": "Batch-Versand im Hintergrund gestartet."}

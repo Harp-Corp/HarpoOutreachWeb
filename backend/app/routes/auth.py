@@ -181,11 +181,11 @@ class EmailLoginBody(BaseModel):
 # Simple in-memory rate limiter for login attempts
 _login_attempts: dict[str, list] = {}
 
-def _check_login_rate(email: str) -> bool:
-    """Return True if login is allowed, False if rate-limited. Max 5 attempts per 5 minutes."""
+def _check_login_rate(ip: str) -> bool:
+    """Return True if login is allowed, False if rate-limited. Max 5 attempts per 5 minutes per IP."""
     from time import time
     now = time()
-    key = email.lower().strip()
+    key = ip
     attempts = _login_attempts.get(key, [])
     # Keep only last 5 minutes
     attempts = [t for t in attempts if now - t < 300]
@@ -197,9 +197,10 @@ def _check_login_rate(email: str) -> bool:
     return True
 
 @router.post("/login")
-async def email_login(body: EmailLoginBody, db: Session = Depends(get_db)):
+async def email_login(body: EmailLoginBody, request: Request, db: Session = Depends(get_db)):
     """Authenticate with email + password. Returns session cookie."""
-    if not _check_login_rate(body.email):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_login_rate(client_ip):
         raise HTTPException(429, "Zu viele Anmeldeversuche. Bitte in 5 Minuten erneut versuchen.")
     from ..models.db_phase2 import UserDB
 
