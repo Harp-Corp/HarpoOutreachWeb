@@ -46,6 +46,11 @@ function App() {
   // Content Calendar state
   const [contentCalendar, setContentCalendar] = useState(null)
   const [socialView, setSocialView] = useState('posts') // 'posts' | 'calendar'
+
+  // ─── Team Management State ────────────────────────────
+  const [teamUsers, setTeamUsers] = useState([])
+  const [teamActivity, setTeamActivity] = useState([])
+  const [showTeamInvite, setShowTeamInvite] = useState(false)
   const [generatingWeekly, setGeneratingWeekly] = useState(false)
 
   // Campaign wizard state
@@ -142,6 +147,10 @@ function App() {
   const loadAnalyticsFunnel = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/funnel`); setAnalyticsFunnel(r.data || null) } catch {} }, [])
   const loadLinkedinAnalytics = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/linkedin-posts`); setLinkedinAnalytics(r) } catch(e) { console.warn('LinkedIn analytics load failed:', e) } }, [])
   const loadActivityLog = useCallback(async () => { try { const r = await fetchJson(`${API}/analytics/activity-log?limit=30`); setActivityLog(r.data || []) } catch {} }, [])
+
+  // ─── Team load functions ───────────────────────────────
+  const loadTeamUsers = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/users`); setTeamUsers(r.data || []) } catch (e) { console.warn('loadTeamUsers:', e.message); setError('Team laden fehlgeschlagen: ' + e.message) } }, [])
+  const loadTeamActivity = useCallback(async () => { try { const r = await fetchJson(`${API}/activity-log?limit=20`); setTeamActivity(r.data || []) } catch {} }, [])
   const loadAuthStatus = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/status`); setAuthStatus(r) } catch {} finally { setAuthChecked(true) } }, [])
   const loadLinkedinSettings = useCallback(async () => {
     try {
@@ -172,7 +181,7 @@ function App() {
     }
   }, [])
 
-  useEffect(() => { loadDashboard(); loadAuthStatus(); loadLinkedinSettings() }, [loadDashboard, loadAuthStatus, loadLinkedinSettings])
+  useEffect(() => { loadDashboard(); loadAuthStatus(); loadLinkedinSettings(); loadTeamUsers() }, [loadDashboard, loadAuthStatus, loadLinkedinSettings, loadTeamUsers])
   useEffect(() => {
     setError(''); setSuccessMsg('')
     if (section === 'overview') { loadDashboard(); loadLeads(); loadAddressBook(); loadCompanies(); loadAnalyticsSummary() }
@@ -181,8 +190,9 @@ function App() {
     else if (section === 'campaign') { loadAddressBook(); loadLeads(); loadSeqCampaigns(); loadSeqTemplates() }
     else if (section === 'social') { loadPosts(); loadContentCalendar() }
     else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics(); loadPosts(); loadActivityLog() }
+    else if (section === 'team') { loadTeamUsers(); loadTeamActivity() }
     else if (section === 'settings') { loadDashboard(); loadAddressBook() }
-  }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard])
+  }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard, loadTeamUsers, loadTeamActivity])
 
   // Reset campaign wizard when entering campaign section
   useEffect(() => {
@@ -1027,6 +1037,7 @@ function App() {
     { id: 'campaign', icon: '📧', label: 'Kampagne' },
     { id: 'analytics', icon: '📊', label: 'Analytics' },
     { id: 'social', icon: '💬', label: 'LinkedIn' },
+    { id: 'team', icon: '👥', label: 'Team' },
     { id: 'settings', icon: '⚙️', label: 'Einstellungen' },
   ]
 
@@ -1165,6 +1176,7 @@ function App() {
             <button key={m.id} type="button" className={`nav-item ${section === m.id ? 'active' : ''}`} onClick={() => setSection(m.id)}>
               <span className="nav-icon">{m.icon}</span><span className="nav-label">{m.label}</span>
               {m.id === 'addressbook' && addressBook.length > 0 && <span className="nav-count">{addressBook.length}</span>}
+              {m.id === 'team' && teamUsers.length > 0 && <span className="nav-count">{teamUsers.length}</span>}
             </button>
           ))}
         </nav>
@@ -2689,6 +2701,129 @@ function App() {
                   </table>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ═══ TEAM ════════════════════════════════ */}
+        {section === 'team' && (
+          <div key="team">
+            <h1 className="page-title">Team</h1>
+            <p className="page-desc">Benutzer verwalten und einladen</p>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div>
+                <p className="sub">Bis zu 10 Benutzer k\u00f6nnen die Plattform nutzen</p>
+              </div>
+              {authStatus?.role === 'admin' && <button className="btn btn-primary btn-sm" onClick={() => setShowTeamInvite(!showTeamInvite)}>+ Einladen</button>}
+            </div>
+
+            {authStatus?.role !== 'admin' && <div className="card" style={{ marginBottom: '1rem', background: '#f0f9ff', border: '1px solid #bae6fd' }}><p className="sub" style={{textAlign:'center',padding:'0.5rem 0'}}>Nur Administratoren k\u00f6nnen Benutzer verwalten.</p></div>}
+
+            {showTeamInvite && (
+              <div className="card" style={{ marginBottom: '1rem', background: '#f9fafb' }}>
+                <h3 style={{marginBottom:'0.75rem'}}>Neuen Benutzer einladen</h3>
+                <form onSubmit={async (e) => {
+                  e.preventDefault()
+                  const fd = new FormData(e.target)
+                  const pw = fd.get('password') || ''
+                  if (pw && pw.length < 8) { setError('Passwort muss mindestens 8 Zeichen lang sein.'); return }
+                  try {
+                    startLoading('Einladung wird gesendet...')
+                    await fetchJson(`${API}/auth/users/invite`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        email: fd.get('email'),
+                        name: fd.get('name'),
+                        role: fd.get('role'),
+                        password: pw,
+                      })
+                    })
+                    showSuccess(pw ? 'Benutzer eingeladen (mit Passwort-Login)' : 'Benutzer eingeladen (Google-Login)')
+                    e.target.reset()
+                    setShowTeamInvite(false)
+                    loadTeamUsers()
+                  } catch (err) { setError(err.message) } finally { stopLoading() }
+                }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                    <div className="form-group"><label>E-Mail</label><input name="email" type="email" required placeholder="user@firma.de" /></div>
+                    <div className="form-group"><label>Name</label><input name="name" placeholder="Max Mustermann" /></div>
+                    <div className="form-group">
+                      <label>Passwort (optional)</label>
+                      <input name="password" type="password" placeholder="Leer = nur Google-Login" minLength={8} />
+                    </div>
+                    <div className="form-group">
+                      <label>Rolle</label>
+                      <select name="role"><option value="user">Benutzer</option><option value="admin">Admin</option></select>
+                    </div>
+                  </div>
+                  <p className="sub" style={{ margin: '0.5rem 0' }}>Mit Passwort: Nutzer kann sich per E-Mail/Passwort anmelden (kein Google n\u00f6tig). Ohne Passwort: Nutzer meldet sich \u00fcber Google an.</p>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button type="submit" className="btn btn-primary btn-sm" disabled={loading}>Einladen</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowTeamInvite(false)}>Abbrechen</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            <div className="card" style={{ marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <h2 style={{margin:0}}>Benutzer ({teamUsers.length}/10)</h2>
+                <button className="btn btn-ghost btn-sm" onClick={loadTeamUsers}>\u21bb</button>
+              </div>
+              {teamUsers.length === 0 && <p className="sub">Noch keine Benutzer angelegt.</p>}
+              {teamUsers.map(u => (
+                <div key={u.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.625rem 0', borderBottom: '1px solid #f3f4f6' }}>
+                  <div style={{display:'flex',alignItems:'center',gap:'0.5rem',flexWrap:'wrap'}}>
+                    <strong>{u.name || u.email}</strong>
+                    <span className="sub">{u.email}</span>
+                    <span className={`badge ${u.role === 'admin' ? 'badge-blue' : 'badge-gray'}`}>{u.role === 'admin' ? 'Admin' : 'Benutzer'}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    {u.last_login && <span className="sub" style={{ fontSize: '0.7rem' }}>Letzter Login: {new Date(u.last_login).toLocaleDateString('de-DE')}</span>}
+                    {u.has_password && <span className="badge badge-gray" title="E-Mail/Passwort-Login">PW</span>}
+                    {u.has_google && <span className="badge badge-blue" title="Google-Login">G</span>}
+                    <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Aktiv' : 'Inaktiv'}</span>
+                    {authStatus?.role === 'admin' && (
+                      <>
+                        <button className="btn btn-ghost btn-sm" onClick={async () => {
+                          const pw = prompt('Neues Passwort eingeben (mind. 8 Zeichen):')
+                          if (!pw) return
+                          if (pw.length < 8) { setError('Passwort muss mindestens 8 Zeichen lang sein.'); return }
+                          try {
+                            startLoading('Passwort wird gesetzt...')
+                            await fetchJson(`${API}/auth/users/${u.id}/set-password`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ password: pw })
+                            })
+                            showSuccess('Passwort gesetzt')
+                            loadTeamUsers()
+                          } catch (err) { setError(err.message) } finally { stopLoading() }
+                        }} title="Passwort setzen">\ud83d\udd11</button>
+                        <button className="btn btn-ghost btn-sm" onClick={async () => {
+                          if (!confirm('Benutzer wirklich deaktivieren?')) return
+                          try { await fetchJson(`${API}/auth/users/${u.id}`, { method: 'DELETE' }); loadTeamUsers() } catch {}
+                        }} title="Deaktivieren">\u2715</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Activity Log */}
+            <div className="card">
+              <h2>Aktivit\u00e4tsprotokoll</h2>
+              {teamActivity.length === 0 && <p className="sub">Noch keine Aktivit\u00e4ten.</p>}
+              {teamActivity.map((a, i) => (
+                <div key={a.id || i} style={{ display: 'flex', gap: '0.75rem', padding: '0.4rem 0', borderBottom: '1px solid #f3f4f6', fontSize: '0.8125rem' }}>
+                  <span className="sub" style={{ minWidth: '120px' }}>{a.created_at ? new Date(a.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                  <span style={{ color: '#6b7280' }}>{a.user_email}</span>
+                  <span>{a.details}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
