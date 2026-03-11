@@ -560,7 +560,7 @@ function App() {
 
   const generateWeeklyPosts = async () => {
     setGeneratingWeekly(true)
-    startLoading('2 Posts f\u00fcr die Woche werden generiert + Cross-Check (kann bis zu 5 Min. dauern)...')
+    startLoading('2 Posts für die Woche werden generiert + Cross-Check (kann bis zu 5 Min. dauern)...')
     setError('')
     try {
       const tueTopic = document.getElementById('tueTopic')?.value || 'Regulatory Update'
@@ -588,7 +588,7 @@ function App() {
   }
 
   const generatePost = async (topic, platform) => {
-    startLoading('Post wird generiert + Cross-Check l\u00e4uft (kann bis zu 3 Min. dauern bei Auto-Regenerierung)...'); setError('')
+    startLoading('Post wird generiert + Cross-Check läuft (kann bis zu 3 Min. dauern bei Auto-Regenerierung)...'); setError('')
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000)
@@ -603,7 +603,7 @@ function App() {
   }
   const [verifyExpanded, setVerifyExpanded] = useState({})
   const verifyPost = async (postId) => {
-    startLoading('Cross-Check l\u00e4uft (3 Pr\u00fcfungen)...'); setError('')
+    startLoading('Cross-Check läuft (3 Prüfungen)...'); setError('')
     try {
       await fetchJson(`${API}/data/social-posts/${postId}/verify`, { method: 'POST' }, 0)
       showSuccess('Cross-Check abgeschlossen')
@@ -629,11 +629,11 @@ function App() {
     showSuccess('Kopiert')
   }
   const publishToLinkedIn = async (postId) => {
-    if (!confirm('Post als Harpocrates Solutions auf LinkedIn ver\u00f6ffentlichen?')) return
+    if (!confirm('Post als Harpocrates Solutions auf LinkedIn veröffentlichen?')) return
     startLoading('Post wird in die Warteschlange gestellt...')
     try {
       const r = await fetchJson(`${API}/data/social-posts/${postId}/publish-linkedin`, { method: 'POST' })
-      showSuccess('Post in Warteschlange \u2014 wird in K\u00fcrze als Harpocrates ver\u00f6ffentlicht.')
+      showSuccess('Post in Warteschlange — wird in Kürze als Harpocrates veröffentlicht.')
       await loadPosts()
     } catch (e) { setError(e.message) }
     stopLoading()
@@ -642,7 +642,7 @@ function App() {
     startLoading('Wird abgebrochen...')
     try {
       await fetchJson(`${API}/data/social-posts/${postId}/cancel-publish`, { method: 'POST' })
-      showSuccess('Ver\u00f6ffentlichung abgebrochen.')
+      showSuccess('Veröffentlichung abgebrochen.')
       await loadPosts()
     } catch (e) { setError(e.message) }
     stopLoading()
@@ -950,7 +950,7 @@ function App() {
       if (r.sent > 0) {
         showSuccess(`${r.sent} gesendet${r.failed ? `, ${r.failed} fehlgeschlagen` : ''}${r.skipped ? `, ${r.skipped} übersprungen` : ''}`)
       } else if (r.failed > 0) {
-        setError(`Versand fehlgeschlagen: ${r.failed} Fehler${r.errors ? ' \u2014 ' + r.errors.join('; ') : ''}. ${r.skipped ? r.skipped + ' übersprungen.' : ''}`)
+        setError(`Versand fehlgeschlagen: ${r.failed} Fehler${r.errors ? ' — ' + r.errors.join('; ') : ''}. ${r.skipped ? r.skipped + ' übersprungen.' : ''}`)
       } else if (r.skipped > 0) {
         setError(`Keine E-Mails versendet (${r.skipped} übersprungen). Möglicherweise wurden die E-Mails nicht freigegeben oder bereits versendet.`)
       } else {
@@ -1116,8 +1116,8 @@ function App() {
         <div className="login-card">
           <img src={harpoLogo} alt="Harpocrates" className="login-logo" />
           <h1 className="login-title">Harpocrates Outreach</h1>
-          <p className="login-desc">Compliance-Outreach-Plattform f\u00fcr dein Team</p>
-          {error && <div className="msg msg-error" style={{marginBottom:'1rem',fontSize:'0.8125rem'}}>{error} <button onClick={() => setError('')}>\u00d7</button></div>}
+          <p className="login-desc">Compliance-Outreach-Plattform für dein Team</p>
+          {error && <div className="msg msg-error" style={{marginBottom:'1rem',fontSize:'0.8125rem'}}>{error} <button onClick={() => setError('')}>×</button></div>}
           
           <div className="login-tabs">
             <button className={`login-tab ${loginTab === 'google' ? 'active' : ''}`} onClick={() => setLoginTab('google')}>Google</button>
@@ -1139,7 +1139,7 @@ function App() {
             </form>
           )}
 
-          <p className="login-footer">Nur eingeladene Teammitglieder k\u00f6nnen sich anmelden.<br/>Der erste Benutzer wird automatisch Admin.</p>
+          <p className="login-footer">Nur eingeladene Teammitglieder können sich anmelden.<br/>Der erste Benutzer wird automatisch Admin.</p>
         </div>
       </div>
     )
@@ -1186,7 +1186,7 @@ function App() {
       </aside>
 
       <main className="main">
-        {authStatus?.must_change_password && <div className="msg msg-error" style={{cursor:'pointer'}} onClick={() => setSection('team')}>\u26a0\ufe0f Bitte \u00e4ndere dein Start-Passwort unter Team &rarr; Passwort \u00e4ndern</div>}
+        {authStatus?.must_change_password && <div className="msg msg-error" style={{cursor:'pointer'}} onClick={() => setSection('team')}>⚠️ Bitte ändere dein Start-Passwort unter Team &rarr; Passwort ändern</div>}
         {error && <div className="msg msg-error">{error} <button onClick={() => setError('')}>×</button></div>}
         {successMsg && <div className="msg msg-success">{successMsg} <button onClick={() => setSuccessMsg('')} style={{background:'none',border:'none',color:'#166534',cursor:'pointer',fontSize:'1.1rem',marginLeft:'auto'}}>×</button></div>}
         {loading && <div className="msg msg-loading">
@@ -1985,7 +1985,7 @@ function App() {
             {socialView === 'weekly' && (
               <div className="card">
                 <h2>Woche planen</h2>
-                <p style={{color:'#6b7280',fontSize:'0.8rem',marginBottom:'1rem'}}>Generiert 2 Posts: einen f\u00fcr Dienstag, einen f\u00fcr Freitag. Beide m\u00fcssen vor Ver\u00f6ffentlichung freigegeben werden.</p>
+                <p style={{color:'#6b7280',fontSize:'0.8rem',marginBottom:'1rem'}}>Generiert 2 Posts: einen für Dienstag, einen für Freitag. Beide müssen vor Veröffentlichung freigegeben werden.</p>
                 <div style={{display:'flex',gap:'1rem',flexWrap:'wrap',marginBottom:'1rem'}}>
                   <div className="form-group" style={{flex:1,minWidth:'200px'}}>
                     <label>Dienstag-Post: Kategorie</label>
@@ -2011,7 +2011,7 @@ function App() {
                   </div>
                 </div>
                 <button className="btn btn-primary" disabled={loading || generatingWeekly} onClick={generateWeeklyPosts}>
-                  {generatingWeekly ? 'Wird generiert...' : 'N\u00e4chste Woche generieren'}
+                  {generatingWeekly ? 'Wird generiert...' : 'Nächste Woche generieren'}
                 </button>
               </div>
             )}
@@ -2039,14 +2039,14 @@ function App() {
                               {p.topic_category && <span className="badge badge-blue" style={{fontSize:'0.55rem'}}>{p.topic_category}</span>}
                               {isPostable && <span className="badge badge-green" style={{fontSize:'0.55rem'}}>Postbar ({s}%)</span>}
                               {p.verification_status !== 'unverified' && !isPostable && <span className="badge badge-red" style={{fontSize:'0.55rem'}}>Nicht postbar ({s}%)</span>}
-                              {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungepr\u00fcft</span>}
+                              {p.verification_status === 'unverified' && <span className="badge badge-gray" style={{fontSize:'0.55rem'}}>Ungeprüft</span>}
                             </div>
                             <div style={{display:'flex',gap:'0.375rem'}}>
                               {!p.is_published && !p.publish_pending && isPostable && (
                                 <button className="btn btn-primary btn-sm" style={{fontSize:'0.65rem',padding:'0.25rem 0.5rem'}} onClick={() => publishToLinkedIn(p.id)}>Freigeben + Posten</button>
                               )}
                               {p.publish_pending && <span className="badge badge-yellow" style={{fontSize:'0.6rem'}}>In Warteschlange</span>}
-                              {p.is_published && <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Ver\u00f6ffentlicht</span>}
+                              {p.is_published && <span className="badge badge-green" style={{fontSize:'0.6rem'}}>Veröffentlicht</span>}
                             </div>
                           </div>
                           <div style={{fontSize:'0.75rem',color:'#374151',whiteSpace:'pre-wrap',maxHeight:'120px',overflow:'hidden',textOverflow:'ellipsis'}}>{p.content?.substring(0, 300)}{p.content?.length > 300 ? '...' : ''}</div>
@@ -2063,7 +2063,7 @@ function App() {
                             <div key={p.id} style={{padding:'0.5rem',marginBottom:'0.25rem',borderRadius:'0.375rem',background:'#f9fafb',fontSize:'0.72rem',color:'#6b7280',display:'flex',gap:'0.5rem',alignItems:'center'}}>
                               <span style={{fontWeight:500,minWidth:'50px'}}>{dateStr}</span>
                               <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.content?.substring(0, 100)}</span>
-                              {p.is_published ? <span className="badge badge-green" style={{fontSize:'0.5rem'}}>Ver\u00f6ffentlicht</span> : <span className="badge badge-gray" style={{fontSize:'0.5rem'}}>Nicht ver\u00f6ffentlicht</span>}
+                              {p.is_published ? <span className="badge badge-green" style={{fontSize:'0.5rem'}}>Veröffentlicht</span> : <span className="badge badge-gray" style={{fontSize:'0.5rem'}}>Nicht veröffentlicht</span>}
                             </div>
                           )
                         })}
@@ -2091,7 +2091,7 @@ function App() {
                   </select>
                 </div>
                 <div className="form-group" style={{flex:1,minWidth:'200px'}}><label>Eigenes Thema (optional)</label>
-                  <input id="postCustomTopic" placeholder="z.B. DORA Deadline M\u00e4rz 2026, Digital Euro Update, NIS2..." onFocus={() => { document.getElementById('postTopic').value = '__custom__' }} />
+                  <input id="postCustomTopic" placeholder="z.B. DORA Deadline März 2026, Digital Euro Update, NIS2..." onFocus={() => { document.getElementById('postTopic').value = '__custom__' }} />
                 </div>
                 <button className="btn btn-primary" disabled={loading} onClick={() => {
                   const sel = document.getElementById('postTopic').value
@@ -2156,9 +2156,9 @@ function App() {
                     // Verdict logic
                     let verdict, verdictColor, verdictBg, verdictBorder, verdictIcon
                     if (score >= 90 && !hasFalse) {
-                      verdict = 'Postbar'; verdictColor = '#166534'; verdictBg = '#f0fdf4'; verdictBorder = '#bbf7d0'; verdictIcon = '\u2705'
+                      verdict = 'Postbar'; verdictColor = '#166534'; verdictBg = '#f0fdf4'; verdictBorder = '#bbf7d0'; verdictIcon = '✅'
                     } else {
-                      verdict = 'Nicht postbar'; verdictColor = '#991b1b'; verdictBg = '#fef2f2'; verdictBorder = '#fecaca'; verdictIcon = '\u274c'
+                      verdict = 'Nicht postbar'; verdictColor = '#991b1b'; verdictBg = '#fef2f2'; verdictBorder = '#fecaca'; verdictIcon = '❌'
                     }
                     const expanded = verifyExpanded[p.id]
                     return (
@@ -2205,9 +2205,9 @@ function App() {
                                 {v.claims.map((c, i) => (
                                   <div key={i} style={{padding:'0.375rem 0.5rem',marginBottom:'0.25rem',background:c.verdict==='verified'?'#f0fdf4':c.verdict==='false'?'#fef2f2':'#fffbeb',borderRadius:'0.375rem',borderLeft:`3px solid ${c.verdict==='verified'?'#22c55e':c.verdict==='inaccurate'?'#f59e0b':c.verdict==='false'?'#ef4444':'#9ca3af'}`}}>
                                     <div style={{display:'flex',gap:'0.375rem',alignItems:'flex-start'}}>
-                                      <span style={{flexShrink:0,fontSize:'0.8rem'}}>{c.verdict==='verified'?'\u2705':c.verdict==='inaccurate'?'\u26a0\ufe0f':c.verdict==='false'?'\u274c':'\u2753'}</span>
+                                      <span style={{flexShrink:0,fontSize:'0.8rem'}}>{c.verdict==='verified'?'✅':c.verdict==='inaccurate'?'⚠️':c.verdict==='false'?'❌':'❓'}</span>
                                       <div style={{flex:1,minWidth:0}}>
-                                        <div style={{fontStyle:'italic',color:'#374151',lineHeight:1.4}}>\u201e{c.claim}\u201c</div>
+                                        <div style={{fontStyle:'italic',color:'#374151',lineHeight:1.4}}>„{c.claim}“</div>
                                         <div style={{color:'#6b7280',marginTop:'0.25rem',lineHeight:1.4}}>{c.details}</div>
                                         {c.source_url && <a href={c.source_url} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',fontSize:'0.65rem',display:'inline-block',marginTop:'0.125rem'}}>{c.source_name || 'Quelle'}</a>}
                                       </div>
@@ -2222,7 +2222,7 @@ function App() {
                                 <div style={{fontWeight:600,marginBottom:'0.375rem',fontSize:'0.75rem',color:'#374151'}}>URL-Check ({urlsOk}/{urlsTotal})</div>
                                 {v.urls_checked.map((u, i) => (
                                   <div key={i} style={{padding:'0.25rem 0',display:'flex',gap:'0.375rem',alignItems:'flex-start',borderBottom:'1px solid #f3f4f6'}}>
-                                    <span style={{flexShrink:0,fontSize:'0.8rem'}}>{u.reachable && u.relevant ? '\u2705' : u.reachable ? '\u26a0\ufe0f' : '\u274c'}</span>
+                                    <span style={{flexShrink:0,fontSize:'0.8rem'}}>{u.reachable && u.relevant ? '✅' : u.reachable ? '⚠️' : '❌'}</span>
                                     <div style={{flex:1,minWidth:0}}>
                                       <div style={{color:'#374151',wordBreak:'break-all',fontSize:'0.65rem',fontFamily:'monospace'}}>{u.url}</div>
                                       <div style={{color:'#6b7280',fontSize:'0.62rem',marginTop:'0.125rem',lineHeight:1.3}}>{u.details}</div>
@@ -2238,7 +2238,7 @@ function App() {
                                 <div style={{display:'flex',flexWrap:'wrap',gap:'0.25rem'}}>
                                   {v.entities.map((e, i) => (
                                     <span key={i} style={{display:'inline-flex',alignItems:'center',gap:'0.25rem',padding:'0.2rem 0.5rem',background:e.exists?'#f0fdf4':'#fef2f2',border:`1px solid ${e.exists?'#bbf7d0':'#fecaca'}`,borderRadius:'1rem',fontSize:'0.62rem',color:e.exists?'#166534':'#991b1b'}} title={e.details}>
-                                      {e.exists ? '\u2705' : '\u274c'} {e.name}
+                                      {e.exists ? '✅' : '❌'} {e.name}
                                     </span>
                                   ))}
                                 </div>
@@ -2714,12 +2714,12 @@ function App() {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <div>
-                <p className="sub">Bis zu 10 Benutzer k\u00f6nnen die Plattform nutzen</p>
+                <p className="sub">Bis zu 10 Benutzer können die Plattform nutzen</p>
               </div>
               {authStatus?.role === 'admin' && <button className="btn btn-primary btn-sm" onClick={() => setShowTeamInvite(!showTeamInvite)}>+ Einladen</button>}
             </div>
 
-            {authStatus?.role !== 'admin' && <div className="card" style={{ marginBottom: '1rem', background: '#f0f9ff', border: '1px solid #bae6fd' }}><p className="sub" style={{textAlign:'center',padding:'0.5rem 0'}}>Nur Administratoren k\u00f6nnen Benutzer verwalten.</p></div>}
+            {authStatus?.role !== 'admin' && <div className="card" style={{ marginBottom: '1rem', background: '#f0f9ff', border: '1px solid #bae6fd' }}><p className="sub" style={{textAlign:'center',padding:'0.5rem 0'}}>Nur Administratoren können Benutzer verwalten.</p></div>}
 
             {showTeamInvite && (
               <div className="card" style={{ marginBottom: '1rem', background: '#f9fafb' }}>
@@ -2741,7 +2741,7 @@ function App() {
                         password: pw,
                       })
                     })
-                    showSuccess('Benutzer eingeladen \u2014 Einladungsmail mit Start-Passwort wurde versendet.')
+                    showSuccess('Benutzer eingeladen — Einladungsmail mit Start-Passwort wurde versendet.')
                     e.target.reset()
                     setShowTeamInvite(false)
                     loadTeamUsers()
@@ -2759,7 +2759,7 @@ function App() {
                       <select name="role"><option value="user">Benutzer</option><option value="admin">Admin</option></select>
                     </div>
                   </div>
-                  <p className="sub" style={{ margin: '0.5rem 0' }}>Ein Start-Passwort wird automatisch generiert und per E-Mail versendet. Der Nutzer wird aufgefordert, es nach dem ersten Login zu \u00e4ndern. Optional: eigenes Passwort festlegen.</p>
+                  <p className="sub" style={{ margin: '0.5rem 0' }}>Ein Start-Passwort wird automatisch generiert und per E-Mail versendet. Der Nutzer wird aufgefordert, es nach dem ersten Login zu ändern. Optional: eigenes Passwort festlegen.</p>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button type="submit" className="btn btn-primary btn-sm" disabled={loading}>Einladen</button>
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowTeamInvite(false)}>Abbrechen</button>
@@ -2771,7 +2771,7 @@ function App() {
             <div className="card" style={{ marginBottom: '1rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
                 <h2 style={{margin:0}}>Benutzer ({teamUsers.length}/10)</h2>
-                <button className="btn btn-ghost btn-sm" onClick={loadTeamUsers}>\u21bb</button>
+                <button className="btn btn-ghost btn-sm" onClick={loadTeamUsers}>↻</button>
               </div>
               {teamUsers.length === 0 && <p className="sub">Noch keine Benutzer angelegt.</p>}
               {teamUsers.map(u => (
@@ -2785,7 +2785,7 @@ function App() {
                     {u.last_login && <span className="sub" style={{ fontSize: '0.7rem' }}>Letzter Login: {new Date(u.last_login).toLocaleDateString('de-DE')}</span>}
                     {u.has_password && <span className="badge badge-gray" title="E-Mail/Passwort-Login">PW</span>}
                     {u.has_google && <span className="badge badge-blue" title="Google-Login">G</span>}
-                    {u.must_change_password && <span className="badge badge-yellow" title="Muss Passwort \u00e4ndern">\u26a0 PW</span>}
+                    {u.must_change_password && <span className="badge badge-yellow" title="Muss Passwort ändern">⚠ PW</span>}
                     <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Aktiv' : 'Inaktiv'}</span>
                     {authStatus?.role === 'admin' && (
                       <>
@@ -2803,15 +2803,15 @@ function App() {
                             showSuccess('Passwort gesetzt')
                             loadTeamUsers()
                           } catch (err) { setError(err.message) } finally { stopLoading() }
-                        }} title="Passwort setzen">\ud83d\udd11</button>
+                        }} title="Passwort setzen">🔑</button>
                         <button className="btn btn-ghost btn-sm" onClick={async () => {
-                          if (!confirm(`${u.name || u.email} wirklich l\u00f6schen? Diese Aktion kann nicht r\u00fcckg\u00e4ngig gemacht werden.`)) return
+                          if (!confirm(`${u.name || u.email} wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.`)) return
                           try {
                             await fetchJson(`${API}/auth/users/${u.id}`, { method: 'DELETE' })
-                            showSuccess(`${u.name || u.email} gel\u00f6scht`)
+                            showSuccess(`${u.name || u.email} gelöscht`)
                             loadTeamUsers()
                           } catch (err) { setError(err.message) }
-                        }} title="L\u00f6schen">\ud83d\uddd1\ufe0f</button>
+                        }} title="Löschen">🗑️</button>
                       </>
                     )}
                   </div>
@@ -2821,8 +2821,8 @@ function App() {
 
             {/* Password Change */}
             <div className="card" style={{ marginBottom: '1rem' }}>
-              <h2 style={{margin:'0 0 0.5rem'}}>Passwort \u00e4ndern</h2>
-              <p className="sub" style={{marginBottom:'0.75rem'}}>Eigenes Passwort f\u00fcr E-Mail/Passwort-Login \u00e4ndern</p>
+              <h2 style={{margin:'0 0 0.5rem'}}>Passwort ändern</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Eigenes Passwort für E-Mail/Passwort-Login ändern</p>
               <form onSubmit={async (e) => {
                 e.preventDefault()
                 const fd = new FormData(e.target)
@@ -2830,15 +2830,15 @@ function App() {
                 const newPw = fd.get('new_password')
                 const confirm = fd.get('confirm_password')
                 if (!newPw || newPw.length < 8) { setError('Neues Passwort muss mindestens 8 Zeichen lang sein.'); return }
-                if (newPw !== confirm) { setError('Passw\u00f6rter stimmen nicht \u00fcberein.'); return }
+                if (newPw !== confirm) { setError('Passwörter stimmen nicht überein.'); return }
                 try {
-                  startLoading('Passwort wird ge\u00e4ndert...')
+                  startLoading('Passwort wird geändert...')
                   await fetchJson(`${API}/auth/set-password`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ current_password: curr || null, new_password: newPw })
                   })
-                  showSuccess('Passwort erfolgreich ge\u00e4ndert')
+                  showSuccess('Passwort erfolgreich geändert')
                   e.target.reset()
                 } catch (err) { setError(err.message) } finally { stopLoading() }
               }}>
@@ -2852,18 +2852,18 @@ function App() {
                     <input name="new_password" type="password" required minLength={8} placeholder="Mind. 8 Zeichen" />
                   </div>
                   <div className="form-group">
-                    <label>Passwort best\u00e4tigen</label>
+                    <label>Passwort bestätigen</label>
                     <input name="confirm_password" type="password" required minLength={8} placeholder="Wiederholen" />
                   </div>
                 </div>
-                <button type="submit" className="btn btn-primary btn-sm" style={{marginTop:'0.5rem'}} disabled={loading}>Passwort \u00e4ndern</button>
+                <button type="submit" className="btn btn-primary btn-sm" style={{marginTop:'0.5rem'}} disabled={loading}>Passwort ändern</button>
               </form>
             </div>
 
             {/* Activity Log */}
             <div className="card">
-              <h2>Aktivit\u00e4tsprotokoll</h2>
-              {teamActivity.length === 0 && <p className="sub">Noch keine Aktivit\u00e4ten.</p>}
+              <h2>Aktivitätsprotokoll</h2>
+              {teamActivity.length === 0 && <p className="sub">Noch keine Aktivitäten.</p>}
               {teamActivity.map((a, i) => (
                 <div key={a.id || i} style={{ display: 'flex', gap: '0.75rem', padding: '0.4rem 0', borderBottom: '1px solid #f3f4f6', fontSize: '0.8125rem' }}>
                   <span className="sub" style={{ minWidth: '120px' }}>{a.created_at ? new Date(a.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
