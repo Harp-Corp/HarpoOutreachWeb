@@ -16,6 +16,7 @@ from ..services import database_service as db_svc
 from ..services import gmail_service as gmail
 from ..services import tracking_service as tracking_svc
 from .email_pipeline import _get_access_token, _refresh_google_token
+from ..services.auth_service import get_current_user
 
 logger = logging.getLogger("harpo.analytics")
 
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 # ─── Sent Emails Overview ────────────────────────────────────────
 
 @router.get("/sent-emails")
-async def list_sent_emails(db: Session = Depends(get_db)):
+async def list_sent_emails(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Return all leads where an email was sent, with full email content and status."""
     leads = db_svc.load_leads(db)
     sent = []
@@ -79,7 +80,7 @@ async def list_sent_emails(db: Session = Depends(get_db)):
 # ─── Check Replies via Gmail ────────────────────────────────────
 
 @router.post("/check-replies")
-async def check_replies(db: Session = Depends(get_db)):
+async def check_replies(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Check Gmail for replies to sent outreach emails.
     Updates lead records with reply content and status."""
     access_token = _get_access_token(db)
@@ -228,7 +229,7 @@ async def check_replies(db: Session = Depends(get_db)):
 # ─── Campaign Summary Stats (Enhanced Funnel) ───────────────────
 
 @router.get("/summary")
-async def analytics_summary(db: Session = Depends(get_db)):
+async def analytics_summary(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get aggregated analytics: full funnel view with sent/replied/bounced ratios."""
     leads = db_svc.load_leads(db)
 
@@ -365,7 +366,7 @@ async def analytics_summary(db: Session = Depends(get_db)):
 # ─── Activity Log (accessible from Analytics) ────────────────
 
 @router.get("/activity-log")
-async def analytics_activity_log(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+async def analytics_activity_log(limit: int = Query(50, ge=1, le=200), user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get recent activity log entries for the analytics dashboard."""
     entries = db.query(ActivityLogDB).order_by(ActivityLogDB.created_at.desc()).limit(limit).all()
     return {"data": [
@@ -385,7 +386,7 @@ async def analytics_activity_log(limit: int = Query(50, ge=1, le=200), db: Sessi
 # ─── Funnel View (Detailed Pipeline) ────────────────────────────
 
 @router.get("/funnel")
-async def analytics_funnel(db: Session = Depends(get_db)):
+async def analytics_funnel(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Detailed funnel view: leads → verified → contacted → replied → converted."""
     leads = db_svc.load_leads(db)
 
@@ -440,7 +441,7 @@ async def analytics_funnel(db: Session = Depends(get_db)):
 # ─── LinkedIn Post Analytics ────────────────────────────────────
 
 @router.get("/linkedin-posts")
-async def linkedin_post_analytics(db: Session = Depends(get_db)):
+async def linkedin_post_analytics(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get analytics for published LinkedIn posts.
     Fetches engagement data (clicks, likes, comments, impressions, shares)
     from LinkedIn organizationalEntityShareStatistics API."""
@@ -556,7 +557,7 @@ async def _fetch_post_stats(org_id: str, linkedin_post_id: str, access_token: st
 
 
 @router.get("/linkedin-page")
-async def linkedin_page_analytics(db: Session = Depends(get_db)):
+async def linkedin_page_analytics(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get LinkedIn organization page statistics (views, visitors)."""
     import httpx
     import urllib.parse

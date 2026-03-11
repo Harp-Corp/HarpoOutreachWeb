@@ -131,6 +131,7 @@ class UserDB(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     sender_email = Column(String, nullable=False, default="")
     sender_name = Column(String, nullable=False, default="")
+    must_change_password = Column(Boolean, nullable=False, default=False)  # True when invited with temp password
     last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -93,7 +93,7 @@ def _init_phase2_tables():
 
 
 def _migrate_users_table():
-    """Add password_hash column if not exists (for email/password login)."""
+    """Add new columns to users table if not exist."""
     from sqlalchemy import text, inspect
     db = SessionLocal()
     try:
@@ -103,6 +103,10 @@ def _migrate_users_table():
             db.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR"))
             db.commit()
             logger.info("Migration: added password_hash column to users")
+        if "must_change_password" not in cols:
+            db.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE"))
+            db.commit()
+            logger.info("Migration: added must_change_password column to users")
     except Exception as e:
         logger.warning(f"Migration check failed (may be fine on first run): {e}")
         db.rollback()

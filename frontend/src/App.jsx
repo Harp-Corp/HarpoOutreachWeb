@@ -1186,6 +1186,7 @@ function App() {
       </aside>
 
       <main className="main">
+        {authStatus?.must_change_password && <div className="msg msg-error" style={{cursor:'pointer'}} onClick={() => setSection('team')}>\u26a0\ufe0f Bitte \u00e4ndere dein Start-Passwort unter Team &rarr; Passwort \u00e4ndern</div>}
         {error && <div className="msg msg-error">{error} <button onClick={() => setError('')}>×</button></div>}
         {successMsg && <div className="msg msg-success">{successMsg} <button onClick={() => setSuccessMsg('')} style={{background:'none',border:'none',color:'#166534',cursor:'pointer',fontSize:'1.1rem',marginLeft:'auto'}}>×</button></div>}
         {loading && <div className="msg msg-loading">
@@ -2740,7 +2741,7 @@ function App() {
                         password: pw,
                       })
                     })
-                    showSuccess(pw ? 'Benutzer eingeladen (mit Passwort-Login)' : 'Benutzer eingeladen (Google-Login)')
+                    showSuccess('Benutzer eingeladen \u2014 Einladungsmail mit Start-Passwort wurde versendet.')
                     e.target.reset()
                     setShowTeamInvite(false)
                     loadTeamUsers()
@@ -2751,14 +2752,14 @@ function App() {
                     <div className="form-group"><label>Name</label><input name="name" placeholder="Max Mustermann" /></div>
                     <div className="form-group">
                       <label>Passwort (optional)</label>
-                      <input name="password" type="password" placeholder="Leer = nur Google-Login" minLength={8} />
+                      <input name="password" type="password" placeholder="Leer = automatisch generiert" minLength={8} />
                     </div>
                     <div className="form-group">
                       <label>Rolle</label>
                       <select name="role"><option value="user">Benutzer</option><option value="admin">Admin</option></select>
                     </div>
                   </div>
-                  <p className="sub" style={{ margin: '0.5rem 0' }}>Mit Passwort: Nutzer kann sich per E-Mail/Passwort anmelden (kein Google n\u00f6tig). Ohne Passwort: Nutzer meldet sich \u00fcber Google an.</p>
+                  <p className="sub" style={{ margin: '0.5rem 0' }}>Ein Start-Passwort wird automatisch generiert und per E-Mail versendet. Der Nutzer wird aufgefordert, es nach dem ersten Login zu \u00e4ndern. Optional: eigenes Passwort festlegen.</p>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button type="submit" className="btn btn-primary btn-sm" disabled={loading}>Einladen</button>
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowTeamInvite(false)}>Abbrechen</button>
@@ -2784,6 +2785,7 @@ function App() {
                     {u.last_login && <span className="sub" style={{ fontSize: '0.7rem' }}>Letzter Login: {new Date(u.last_login).toLocaleDateString('de-DE')}</span>}
                     {u.has_password && <span className="badge badge-gray" title="E-Mail/Passwort-Login">PW</span>}
                     {u.has_google && <span className="badge badge-blue" title="Google-Login">G</span>}
+                    {u.must_change_password && <span className="badge badge-yellow" title="Muss Passwort \u00e4ndern">\u26a0 PW</span>}
                     <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Aktiv' : 'Inaktiv'}</span>
                     {authStatus?.role === 'admin' && (
                       <>
@@ -2811,6 +2813,47 @@ function App() {
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* Password Change */}
+            <div className="card" style={{ marginBottom: '1rem' }}>
+              <h2 style={{margin:'0 0 0.5rem'}}>Passwort \u00e4ndern</h2>
+              <p className="sub" style={{marginBottom:'0.75rem'}}>Eigenes Passwort f\u00fcr E-Mail/Passwort-Login \u00e4ndern</p>
+              <form onSubmit={async (e) => {
+                e.preventDefault()
+                const fd = new FormData(e.target)
+                const curr = fd.get('current_password') || ''
+                const newPw = fd.get('new_password')
+                const confirm = fd.get('confirm_password')
+                if (!newPw || newPw.length < 8) { setError('Neues Passwort muss mindestens 8 Zeichen lang sein.'); return }
+                if (newPw !== confirm) { setError('Passw\u00f6rter stimmen nicht \u00fcberein.'); return }
+                try {
+                  startLoading('Passwort wird ge\u00e4ndert...')
+                  await fetchJson(`${API}/auth/set-password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ current_password: curr || null, new_password: newPw })
+                  })
+                  showSuccess('Passwort erfolgreich ge\u00e4ndert')
+                  e.target.reset()
+                } catch (err) { setError(err.message) } finally { stopLoading() }
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem', maxWidth: '700px' }}>
+                  <div className="form-group">
+                    <label>Aktuelles Passwort</label>
+                    <input name="current_password" type="password" placeholder="Falls bereits gesetzt" />
+                  </div>
+                  <div className="form-group">
+                    <label>Neues Passwort</label>
+                    <input name="new_password" type="password" required minLength={8} placeholder="Mind. 8 Zeichen" />
+                  </div>
+                  <div className="form-group">
+                    <label>Passwort best\u00e4tigen</label>
+                    <input name="confirm_password" type="password" required minLength={8} placeholder="Wiederholen" />
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-primary btn-sm" style={{marginTop:'0.5rem'}} disabled={loading}>Passwort \u00e4ndern</button>
+              </form>
             </div>
 
             {/* Activity Log */}

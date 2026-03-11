@@ -67,7 +67,21 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> d
         "name": user.name,
         "role": user.role,
         "avatar_url": user.avatar_url or "",
+        "must_change_password": getattr(user, 'must_change_password', False),
     }
+
+
+async def get_current_user_or_apikey(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Like get_current_user but also accepts Bearer <SECRET_KEY> for server-to-server calls (cron jobs).
+    Returns a system user dict when API key auth is used."""
+    # Check for Bearer API key first (used by cron jobs)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if token == settings.secret_key:
+            return {"id": "system", "email": "system@harpocrates", "name": "System", "role": "admin", "avatar_url": ""}
+    # Fall back to session cookie auth
+    return await get_current_user(request, db)
 
 
 async def get_current_user_optional(request: Request, db: Session = Depends(get_db)) -> Optional[dict]:

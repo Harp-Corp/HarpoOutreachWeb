@@ -1,6 +1,8 @@
 # Authentication routes – Google OAuth + Email/Password login
 from __future__ import annotations
 
+import secrets
+import string
 from datetime import datetime
 from uuid import uuid4
 
@@ -230,6 +232,7 @@ async def set_own_password(body: SetPasswordBody, user: dict = Depends(get_curre
         raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
 
     db_user.password_hash = _hash_password(body.new_password)
+    db_user.must_change_password = False  # Clear flag after password change
     db.commit()
     return {"success": True, "message": "Passwort gesetzt."}
 
@@ -248,6 +251,7 @@ async def auth_status(user: dict = Depends(get_current_user_optional), db: Sessi
             "avatar_url": user.get("avatar_url", ""),
             "user_id": user["id"],
             "token_expired": False,
+            "must_change_password": user.get("must_change_password", False),
         }
 
     # No valid session
@@ -314,6 +318,7 @@ async def list_users(admin: dict = Depends(require_admin), db: Session = Depends
             "is_active": u.is_active,
             "has_password": bool(u.password_hash),
             "has_google": bool(u.google_id),
+            "must_change_password": getattr(u, 'must_change_password', False),
             "avatar_url": u.avatar_url or "",
             "last_login": u.last_login.isoformat() if u.last_login else None,
             "created_at": u.created_at.isoformat() if u.created_at else None,
@@ -329,10 +334,58 @@ class InviteBody(BaseModel):
     password: str = ""  # optional initial password for email/password users
 
 
+def _generate_temp_password(length: int = 12) -> str:
+    """Generate a random temporary password."""
+    chars = string.ascii_letters + string.digits + "!@#$%"
+    return ''.join(secrets.choice(chars) for _ in range(length))
+
+
+def _send_invite_email_sync(to_email: str, to_name: str, temp_password: str, login_url: str, invited_by: str):
+    """Send invite email with login link and temporary password via SMTP (synchronous)."""
+    from ..services import smtp_service as smtp
+    from ..config import settings as cfg
+
+    subject = "Einladung zu Harpocrates Outreach"
+    body = f"""<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; padding: 2rem;">
+    <div style="text-align: center; margin-bottom: 2rem;">
+        <h1 style="color: #1e3a5f; font-size: 1.5rem; margin: 0;">Harpocrates Outreach</h1>
+    </div>
+    <p>Hallo {to_name},</p>
+    <p>{invited_by} hat dich zur <strong>Harpocrates Outreach</strong>-Plattform eingeladen.</p>
+    <div style="background: #f0f4f8; border-radius: 8px; padding: 1.25rem; margin: 1.5rem 0;">
+        <p style="margin: 0 0 0.5rem;"><strong>Login-URL:</strong></p>
+        <p style="margin: 0 0 1rem;"><a href="{login_url}" style="color: #2563eb;">{login_url}</a></p>
+        <p style="margin: 0 0 0.5rem;"><strong>E-Mail:</strong> {to_email}</p>
+        <p style="margin: 0 0 0.5rem;"><strong>Start-Passwort:</strong> <code style="background: #fff; padding: 2px 6px; border-radius: 4px; font-size: 1.05em;">{temp_password}</code></p>
+    </div>
+    <p style="color: #dc2626; font-weight: 600;">&#9888;&#65039; Bitte aendere dein Passwort nach dem ersten Login unter Team &rarr; Passwort aendern.</p>
+    <p style="color: #6b7280; font-size: 0.85rem; margin-top: 2rem;">Diese E-Mail wurde automatisch versendet. Bei Fragen wende dich an {invited_by}.</p>
+</div>"""
+
+    try:
+        smtp.send_email(
+            to=to_email,
+            from_addr=cfg.sender_email,
+            subject=subject,
+            body=body,
+            smtp_host=cfg.smtp_host,
+            smtp_port=int(cfg.smtp_port),
+            smtp_user=cfg.smtp_user,
+            smtp_password=cfg.smtp_password,
+            reply_to=cfg.reply_to_email,
+        )
+        logger.info(f"Invite email sent to {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send invite email to {to_email}: {e}")
+        return False
+
+
 @router.post("/users/invite")
-async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db: Session = Depends(get_db)):
-    """Invite a new user (admin only, max 10). Optionally set a password for non-Google users."""
+async def invite_user(body: InviteBody, request: Request, admin: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    """Invite a new user (admin only, max 10). Generates a temp password and sends invite email."""
     from ..models.db_phase2 import UserDB
+    import asyncio
 
     email = body.email.lower().strip()
     count = db.query(UserDB).filter(UserDB.is_active == True).count()
@@ -343,17 +396,20 @@ async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db
         if not existing.is_active:
             existing.is_active = True
             existing.role = body.role
-            if body.password and len(body.password) >= 8:
-                existing.password_hash = _hash_password(body.password)
+            temp_pw = body.password if (body.password and len(body.password) >= 8) else _generate_temp_password()
+            existing.password_hash = _hash_password(temp_pw)
+            existing.must_change_password = True
             db.commit()
-            return {"success": True, "data": {"id": str(existing.id), "email": existing.email, "role": existing.role}, "reactivated": True}
+            # Send invite email
+            login_url = settings.frontend_url
+            await asyncio.to_thread(_send_invite_email_sync, email, existing.name, temp_pw, login_url, admin['email'])
+            return {"success": True, "data": {"id": str(existing.id), "email": existing.email, "role": existing.role}, "reactivated": True, "email_sent": True}
         raise HTTPException(400, f"Benutzer {email} existiert bereits.")
 
-    pw_hash = None
-    if body.password:
-        if len(body.password) < 8:
-            raise HTTPException(400, "Passwort muss mindestens 8 Zeichen lang sein.")
-        pw_hash = _hash_password(body.password)
+    # Generate password: use provided one or create temp password
+    temp_pw = body.password if (body.password and len(body.password) >= 8) else _generate_temp_password()
+    pw_hash = _hash_password(temp_pw)
+    must_change = not bool(body.password and len(body.password) >= 8)  # Only force change for auto-generated passwords
 
     user = UserDB(
         id=uuid4(),
@@ -361,12 +417,20 @@ async def invite_user(body: InviteBody, admin: dict = Depends(require_admin), db
         name=body.name or email.split("@")[0],
         role=body.role,
         password_hash=pw_hash,
+        must_change_password=must_change,
         is_active=True,
     )
     db.add(user)
     db.commit()
-    logger.info(f"User invited: {email} (password={'yes' if pw_hash else 'no'}) by {admin['email']}")
-    return {"success": True, "data": {"id": str(user.id), "email": user.email, "role": user.role, "has_password": bool(pw_hash)}}
+
+    # Send invite email in background
+    login_url = settings.frontend_url
+    email_sent = await asyncio.to_thread(
+        _send_invite_email_sync, email, user.name, temp_pw, login_url, admin['email']
+    )
+
+    logger.info(f"User invited: {email} (temp_pw={'auto' if must_change else 'custom'}) by {admin['email']}, email_sent={email_sent}")
+    return {"success": True, "data": {"id": str(user.id), "email": user.email, "role": user.role, "has_password": True}, "email_sent": email_sent}
 
 
 class AdminSetPasswordBody(BaseModel):

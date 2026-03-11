@@ -17,6 +17,7 @@ from ..services import database_service as db_svc
 from ..services import perplexity_service as pplx
 from ..services import smtp_service as smtp
 from ..config import settings
+from ..services.auth_service import get_current_user
 
 logger = logging.getLogger("harpo.campaigns")
 
@@ -92,7 +93,7 @@ def _get_default_template(db: Session) -> dict:
 # ─── Template CRUD ────────────────────────────────────────────────
 
 @router.get("/templates")
-async def list_templates(db: Session = Depends(get_db)):
+async def list_templates(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all campaign templates."""
     templates = db.query(CampaignTemplateDB).order_by(CampaignTemplateDB.created_at).all()
     if not templates:
@@ -114,7 +115,7 @@ async def list_templates(db: Session = Depends(get_db)):
 
 
 @router.post("/templates")
-async def create_template(body: CreateTemplateBody, db: Session = Depends(get_db)):
+async def create_template(body: CreateTemplateBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Create a new campaign template."""
     steps_data = [s.model_dump() for s in body.steps]
     tpl = CampaignTemplateDB(
@@ -130,7 +131,7 @@ async def create_template(body: CreateTemplateBody, db: Session = Depends(get_db
 
 
 @router.delete("/templates/{template_id}")
-async def delete_template(template_id: UUID, db: Session = Depends(get_db)):
+async def delete_template(template_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     obj = db.get(CampaignTemplateDB, template_id)
     if obj:
         db.delete(obj)
@@ -141,7 +142,7 @@ async def delete_template(template_id: UUID, db: Session = Depends(get_db)):
 # ─── Start Campaign for Leads ────────────────────────────────────
 
 @router.post("/start")
-async def start_campaign(body: StartCampaignBody, db: Session = Depends(get_db)):
+async def start_campaign(body: StartCampaignBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Assign a campaign sequence to leads. This sets up the sequence steps
     but does NOT send anything — all sends require explicit approval."""
     # Get template
@@ -202,7 +203,7 @@ async def start_campaign(body: StartCampaignBody, db: Session = Depends(get_db))
 # ─── Draft Next Step ─────────────────────────────────────────────
 
 @router.post("/draft-next/{lead_id}")
-async def draft_next_step(lead_id: UUID, db: Session = Depends(get_db)):
+async def draft_next_step(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Draft the next pending step in a lead's campaign sequence."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
@@ -352,7 +353,7 @@ Return JSON: {{"subject": "...", "body": "..."}}"""
 # ─── Campaign Status ──────────────────────────────────────────────
 
 @router.get("/status")
-async def campaign_status(db: Session = Depends(get_db)):
+async def campaign_status(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get overview of all leads with active campaigns."""
     leads = db_svc.load_leads(db)
     campaigns = []
@@ -402,7 +403,7 @@ async def campaign_status(db: Session = Depends(get_db)):
 # ─── Pause / Resume Campaign ─────────────────────────────────────
 
 @router.post("/pause/{lead_id}")
-async def pause_campaign(lead_id: UUID, db: Session = Depends(get_db)):
+async def pause_campaign(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -413,7 +414,7 @@ async def pause_campaign(lead_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/resume/{lead_id}")
-async def resume_campaign(lead_id: UUID, db: Session = Depends(get_db)):
+async def resume_campaign(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -426,7 +427,7 @@ async def resume_campaign(lead_id: UUID, db: Session = Depends(get_db)):
 # ─── Approve Step ─────────────────────────────────────────────────
 
 @router.post("/approve-step/{lead_id}/{step_num}")
-async def approve_step(lead_id: UUID, step_num: int, db: Session = Depends(get_db)):
+async def approve_step(lead_id: UUID, step_num: int, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Approve a specific step in a lead's campaign sequence."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -467,7 +468,7 @@ async def approve_step(lead_id: UUID, step_num: int, db: Session = Depends(get_d
 # ─── Draft All Next Steps (batch) ────────────────────────────────
 
 @router.post("/draft-all-next")
-async def draft_all_next_steps(db: Session = Depends(get_db)):
+async def draft_all_next_steps(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Draft the next pending step for all leads with active campaigns."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
@@ -584,7 +585,7 @@ async def _send_step_via_smtp(
 # ─── Send Campaign Step ──────────────────────────────────────────
 
 @router.post("/send-step/{lead_id}/{step_num}")
-async def send_campaign_step(lead_id: UUID, step_num: int, db: Session = Depends(get_db)):
+async def send_campaign_step(lead_id: UUID, step_num: int, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send an approved campaign step via SMTP. Requires explicit user approval first."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -666,7 +667,7 @@ async def send_campaign_step(lead_id: UUID, step_num: int, db: Session = Depends
 # ─── Send All Approved Steps (batch) ─────────────────────────────
 
 @router.post("/send-approved-steps")
-async def send_approved_steps(db: Session = Depends(get_db)):
+async def send_approved_steps(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send all approved campaign steps that are due. Respects scheduling and rate limits.
     This is the main batch send endpoint for campaign automation."""
     leads = db_svc.load_leads(db)

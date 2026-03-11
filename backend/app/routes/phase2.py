@@ -28,6 +28,7 @@ from ..models.db_phase2 import (
 from ..services import rotation_service as rotation
 from ..services import tracking_service as tracking
 from ..services import warmup_service as warmup
+from ..services.auth_service import get_current_user
 
 logger = logging.getLogger("harpo.phase2")
 
@@ -51,14 +52,14 @@ class AddWarmupAccountBody(BaseModel):
 
 
 @router.get("/warmup/accounts")
-async def list_warmup_accounts(db: Session = Depends(get_db)):
+async def list_warmup_accounts(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all warmup accounts with status."""
     accounts = warmup.list_accounts(db)
     return {"success": True, "data": accounts}
 
 
 @router.post("/warmup/accounts")
-async def add_warmup_account(body: AddWarmupAccountBody, db: Session = Depends(get_db)):
+async def add_warmup_account(body: AddWarmupAccountBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Add a new sender account for warmup."""
     existing = db.query(WarmupAccountDB).filter(WarmupAccountDB.email == body.email).first()
     if existing:
@@ -83,7 +84,7 @@ async def add_warmup_account(body: AddWarmupAccountBody, db: Session = Depends(g
 
 
 @router.post("/warmup/accounts/{account_id}/start")
-async def start_warmup_account(account_id: UUID, db: Session = Depends(get_db)):
+async def start_warmup_account(account_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Start/restart warmup for an account."""
     account = db.query(WarmupAccountDB).filter(WarmupAccountDB.id == account_id).first()
     if not account:
@@ -93,14 +94,14 @@ async def start_warmup_account(account_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/warmup/accounts/{account_id}/status")
-async def warmup_status(account_id: UUID, db: Session = Depends(get_db)):
+async def warmup_status(account_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get detailed warmup status."""
     status = warmup.get_warmup_status(db, account_id)
     return {"success": True, "data": status}
 
 
 @router.delete("/warmup/accounts/{account_id}")
-async def delete_warmup_account(account_id: UUID, db: Session = Depends(get_db)):
+async def delete_warmup_account(account_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Remove a warmup account."""
     account = db.query(WarmupAccountDB).filter(WarmupAccountDB.id == account_id).first()
     if not account:
@@ -111,7 +112,7 @@ async def delete_warmup_account(account_id: UUID, db: Session = Depends(get_db))
 
 
 @router.patch("/warmup/accounts/{account_id}")
-async def update_warmup_account(account_id: UUID, body: dict, db: Session = Depends(get_db)):
+async def update_warmup_account(account_id: UUID, body: dict, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Update warmup account settings."""
     account = db.query(WarmupAccountDB).filter(WarmupAccountDB.id == account_id).first()
     if not account:
@@ -140,7 +141,7 @@ class AddSenderBody(BaseModel):
 
 
 @router.get("/sender-pool")
-async def list_sender_pool(db: Session = Depends(get_db)):
+async def list_sender_pool(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all senders in the rotation pool."""
     pool = rotation.get_pool_status(db)
     capacity = rotation.get_total_daily_capacity(db)
@@ -148,7 +149,7 @@ async def list_sender_pool(db: Session = Depends(get_db)):
 
 
 @router.post("/sender-pool")
-async def add_sender_to_pool(body: AddSenderBody, db: Session = Depends(get_db)):
+async def add_sender_to_pool(body: AddSenderBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Add a sender to the rotation pool."""
     existing = db.query(SenderPoolDB).filter(SenderPoolDB.email == body.email).first()
     if existing:
@@ -171,7 +172,7 @@ async def add_sender_to_pool(body: AddSenderBody, db: Session = Depends(get_db))
 
 
 @router.delete("/sender-pool/{sender_id}")
-async def remove_sender(sender_id: UUID, db: Session = Depends(get_db)):
+async def remove_sender(sender_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Remove a sender from the pool."""
     sender = db.query(SenderPoolDB).filter(SenderPoolDB.id == sender_id).first()
     if not sender:
@@ -182,7 +183,7 @@ async def remove_sender(sender_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.patch("/sender-pool/{sender_id}")
-async def update_sender(sender_id: UUID, body: dict, db: Session = Depends(get_db)):
+async def update_sender(sender_id: UUID, body: dict, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Update sender pool settings."""
     sender = db.query(SenderPoolDB).filter(SenderPoolDB.id == sender_id).first()
     if not sender:
@@ -222,14 +223,14 @@ async def tracking_click(tracking_id: str, url: str = Query(...), db: Session = 
 
 
 @router.get("/tracking/stats")
-async def tracking_stats(lead_id: str | None = None, db: Session = Depends(get_db)):
+async def tracking_stats(lead_id: str | None = None, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get email tracking statistics."""
     stats = tracking.get_tracking_stats(db, lead_id)
     return {"success": True, "data": stats}
 
 
 @router.get("/tracking/dashboard")
-async def tracking_dashboard(db: Session = Depends(get_db)):
+async def tracking_dashboard(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get tracking dashboard data."""
     all_stats = tracking.get_tracking_stats(db)
     daily = defaultdict(lambda: {"sent": 0, "opened": 0, "clicked": 0})
@@ -263,7 +264,7 @@ async def tracking_dashboard(db: Session = Depends(get_db)):
 
 
 @router.get("/activity-log")
-async def get_activity_log(limit: int = 50, db: Session = Depends(get_db)):
+async def get_activity_log(limit: int = 50, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get recent activity log entries."""
     entries = db.query(ActivityLogDB).order_by(ActivityLogDB.created_at.desc()).limit(limit).all()
     return {"success": True, "data": [
@@ -310,7 +311,7 @@ class CreateABTestBody(BaseModel):
 
 
 @router.get("/ab-tests")
-async def list_ab_tests(db: Session = Depends(get_db)):
+async def list_ab_tests(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all A/B tests."""
     tests = db.query(ABTestDB).order_by(ABTestDB.created_at.desc()).all()
     return {"success": True, "data": [
@@ -344,7 +345,7 @@ async def list_ab_tests(db: Session = Depends(get_db)):
 
 
 @router.post("/ab-tests")
-async def create_ab_test(body: CreateABTestBody, db: Session = Depends(get_db)):
+async def create_ab_test(body: CreateABTestBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Create a new A/B test."""
     test = ABTestDB(
         id=uuid4(),
@@ -363,7 +364,7 @@ async def create_ab_test(body: CreateABTestBody, db: Session = Depends(get_db)):
 
 
 @router.post("/ab-tests/{test_id}/start")
-async def start_ab_test(test_id: UUID, db: Session = Depends(get_db)):
+async def start_ab_test(test_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Start an A/B test."""
     test = db.query(ABTestDB).filter(ABTestDB.id == test_id).first()
     if not test:
@@ -375,7 +376,7 @@ async def start_ab_test(test_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/ab-tests/{test_id}/complete")
-async def complete_ab_test(test_id: UUID, db: Session = Depends(get_db)):
+async def complete_ab_test(test_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Complete an A/B test and determine winner."""
     test = db.query(ABTestDB).filter(ABTestDB.id == test_id).first()
     if not test:
@@ -391,7 +392,7 @@ async def complete_ab_test(test_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.delete("/ab-tests/{test_id}")
-async def delete_ab_test(test_id: UUID, db: Session = Depends(get_db)):
+async def delete_ab_test(test_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Delete an A/B test."""
     test = db.query(ABTestDB).filter(ABTestDB.id == test_id).first()
     if not test:
@@ -412,7 +413,7 @@ class CreateSequenceBody(BaseModel):
 
 
 @router.get("/sequences")
-async def list_sequences(db: Session = Depends(get_db)):
+async def list_sequences(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all email sequences."""
     seqs = db.query(SequenceDB).order_by(SequenceDB.created_at.desc()).all()
     return {"success": True, "data": [
@@ -432,7 +433,7 @@ async def list_sequences(db: Session = Depends(get_db)):
 
 
 @router.post("/sequences")
-async def create_sequence(body: CreateSequenceBody, db: Session = Depends(get_db)):
+async def create_sequence(body: CreateSequenceBody, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Create a new email sequence."""
     seq = SequenceDB(
         id=uuid4(),
@@ -446,7 +447,7 @@ async def create_sequence(body: CreateSequenceBody, db: Session = Depends(get_db
 
 
 @router.get("/sequences/{seq_id}/enrollments")
-async def list_enrollments(seq_id: UUID, db: Session = Depends(get_db)):
+async def list_enrollments(seq_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all enrollments in a sequence."""
     enrollments = db.query(SequenceEnrollmentDB).filter(
         SequenceEnrollmentDB.sequence_id == seq_id
@@ -465,7 +466,7 @@ async def list_enrollments(seq_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.delete("/sequences/{seq_id}")
-async def delete_sequence(seq_id: UUID, db: Session = Depends(get_db)):
+async def delete_sequence(seq_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Delete a sequence and its enrollments."""
     seq = db.query(SequenceDB).filter(SequenceDB.id == seq_id).first()
     if not seq:

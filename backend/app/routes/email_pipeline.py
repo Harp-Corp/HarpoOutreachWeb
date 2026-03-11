@@ -30,6 +30,7 @@ import logging
 import time as _time
 
 import httpx as _httpx
+from ..services.auth_service import get_current_user
 
 _logger = logging.getLogger("harpo.email_pipeline")
 
@@ -147,11 +148,12 @@ async def _send_via_smtp(
     )
 
 
-def _log_activity(db: Session, action: str, entity_type: str, entity_id: str, details: str):
-    """Log an activity entry."""
+def _log_activity(db: Session, action: str, entity_type: str, entity_id: str, details: str, user: dict = None):
+    """Log an activity entry with optional user attribution."""
     try:
         entry = ActivityLogDB(
-            user_email="system",
+            user_id=user.get("id") if user and user.get("id") != "system" else None,
+            user_email=user.get("email", "system") if user else "system",
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,
@@ -176,7 +178,7 @@ class BatchLeadIds(BaseModel):
 # ─── Single Draft ──────────────────────────────────────────────
 
 @router.post("/draft/{lead_id}")
-async def draft_email(lead_id: UUID, db: Session = Depends(get_db)):
+async def draft_email(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Research challenges and draft a personalized email for a lead."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
@@ -237,7 +239,7 @@ async def draft_email(lead_id: UUID, db: Session = Depends(get_db)):
 # ─── Draft All (existing leads without draft) ─────────────────
 
 @router.post("/draft-all")
-async def draft_all_emails(db: Session = Depends(get_db)):
+async def draft_all_emails(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Draft emails for all leads that have an email but no draft."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
@@ -283,7 +285,7 @@ async def draft_all_emails(db: Session = Depends(get_db)):
 # ─── Batch Draft (for specific lead IDs – campaign wizard) ────
 
 @router.post("/draft-batch")
-async def draft_batch_emails(data: BatchLeadIds, db: Session = Depends(get_db)):
+async def draft_batch_emails(data: BatchLeadIds, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Draft emails for specific leads by ID (campaign wizard step 2)."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
@@ -352,7 +354,7 @@ async def draft_batch_emails(data: BatchLeadIds, db: Session = Depends(get_db)):
 # ─── Single Approve ───────────────────────────────────────────
 
 @router.post("/approve/{lead_id}")
-async def approve_email(lead_id: UUID, db: Session = Depends(get_db)):
+async def approve_email(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -370,7 +372,7 @@ async def approve_email(lead_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/unapprove/{lead_id}")
-async def unapprove_email(lead_id: UUID, db: Session = Depends(get_db)):
+async def unapprove_email(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Revoke approval for an email draft."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -391,7 +393,7 @@ async def unapprove_email(lead_id: UUID, db: Session = Depends(get_db)):
 # ─── Approve / Unapprove All ─────────────────────────────────
 
 @router.post("/approve-all")
-async def approve_all(db: Session = Depends(get_db)):
+async def approve_all(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     leads = db_svc.load_leads(db)
     count = 0
     for lead in leads:
@@ -410,7 +412,7 @@ async def approve_all(db: Session = Depends(get_db)):
 # ─── Batch Approve (specific IDs) ────────────────────────────
 
 @router.post("/approve-batch")
-async def approve_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
+async def approve_batch(data: BatchLeadIds, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Approve emails for specific leads (campaign wizard step 3)."""
     approved = 0
     for lid_str in data.lead_ids:
@@ -438,6 +440,7 @@ async def approve_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
 async def update_draft(
     lead_id: UUID,
     data: UpdateDraftBody,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     lead = db_svc.get_lead(db, lead_id)
@@ -459,7 +462,7 @@ async def update_draft(
 
 
 @router.delete("/draft/{lead_id}")
-async def delete_draft(lead_id: UUID, db: Session = Depends(get_db)):
+async def delete_draft(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
         raise HTTPException(404, "Lead nicht gefunden.")
@@ -471,7 +474,7 @@ async def delete_draft(lead_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/reset/{lead_id}")
-async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
+async def reset_lead_campaign(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Full reset: clears draft, send date, thread ID, delivery status, blocklist entry."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -494,7 +497,7 @@ async def reset_lead_campaign(lead_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/resend/{lead_id}")
-async def resend_lead(lead_id: UUID, db: Session = Depends(get_db)):
+async def resend_lead(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Soft reset for re-sending: keeps draft+approval, only clears send date so it can be sent again."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -523,7 +526,7 @@ async def resend_lead(lead_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/reset-batch")
-async def reset_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
+async def reset_batch(data: BatchLeadIds, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Reset multiple leads for re-sending (campaign wizard reset)."""
     reset_count = 0
     for lid_str in data.lead_ids:
@@ -555,7 +558,7 @@ async def reset_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
 # ─── Single Send ──────────────────────────────────────────────
 
 @router.post("/send/{lead_id}")
-async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
+async def send_email(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send an approved email to a lead via Hostinger SMTP."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -659,7 +662,7 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
     db.commit()
 
     # Activity log
-    _log_activity(db, "email_sent", "lead", str(lead_id), f"Email an {lead.email}: {draft.get('subject', '')[:80]}")
+    _log_activity(db, "email_sent", "lead", str(lead_id), f"Email an {lead.email}: {draft.get('subject', '')[:80]}", user=user)
 
     _logger.info(f"Email sent successfully to {lead.email}, msg_id={send_result.get('msg_id')}, tracking_id={tracking_id}")
     return {"success": True, "message_id": send_result.get("msg_id"), "tracking_id": tracking_id}
@@ -668,7 +671,7 @@ async def send_email(lead_id: UUID, db: Session = Depends(get_db)):
 # ─── Send All Approved ────────────────────────────────────────
 
 @router.post("/send-all")
-async def send_all_approved(db: Session = Depends(get_db)):
+async def send_all_approved(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send all approved emails via SMTP (batch limited)."""
     batch_size = int(db_svc.get_setting(db, "batch_size", "10"))
 
@@ -753,7 +756,7 @@ async def send_all_approved(db: Session = Depends(get_db)):
 # ─── Batch Send (specific IDs – campaign wizard step 4) ──────
 
 @router.post("/send-batch")
-async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
+async def send_batch(data: BatchLeadIds, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send approved emails for specific leads via SMTP (campaign wizard step 4).
     Respects rate limits: 30-90s random delay between sends."""
     sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
@@ -855,7 +858,7 @@ async def send_batch(data: BatchLeadIds, db: Session = Depends(get_db)):
 # ─── Send Follow-Up ───────────────────────────────────────────
 
 @router.post("/send-follow-up/{lead_id}")
-async def send_follow_up(lead_id: UUID, db: Session = Depends(get_db)):
+async def send_follow_up(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send an approved follow-up email to a lead via Hostinger SMTP."""
     lead = db_svc.get_lead(db, lead_id)
     if not lead:
@@ -906,7 +909,7 @@ async def send_follow_up(lead_id: UUID, db: Session = Depends(get_db)):
 # ─── Bounce Check (via Hostinger IMAP) ────────────────────────
 
 @router.post("/check-bounces")
-async def check_bounces(db: Session = Depends(get_db)):
+async def check_bounces(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Check Hostinger IMAP for bounce-back messages and update lead delivery status."""
     from ..services import imap_service as imap
 
@@ -965,7 +968,7 @@ async def check_bounces(db: Session = Depends(get_db)):
 # ─── Reply Check (via Hostinger IMAP — fallback) ─────────────
 
 @router.post("/check-replies-imap")
-async def check_replies_imap(db: Session = Depends(get_db)):
+async def check_replies_imap(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Check Hostinger IMAP for replies sent directly to mf@harpocrates-corp.com.
     This is a fallback — primary reply checking uses Gmail API (Reply-To: gmail)."""
     from ..services import imap_service as imap
@@ -1037,7 +1040,7 @@ async def check_replies_imap(db: Session = Depends(get_db)):
 # ─── Follow-Up Draft ─────────────────────────────────────────
 
 @router.post("/draft-follow-up/{lead_id}")
-async def draft_follow_up(lead_id: UUID, db: Session = Depends(get_db)):
+async def draft_follow_up(lead_id: UUID, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Draft a follow-up email for a lead."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:

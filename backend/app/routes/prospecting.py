@@ -19,6 +19,7 @@ from ..services import brave_fallback as brave
 from ..services import multi_verify_service as multi_verify
 from ..models.schemas import Industry, Region
 from ..config import settings
+from ..services.auth_service import get_current_user
 
 logger = logging.getLogger("harpo.prospecting")
 
@@ -72,6 +73,7 @@ class SearchCompanyRequest(PydanticBaseModel):
 @router.post("/search-company")
 async def search_company(
     req: SearchCompanyRequest,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Targeted company search: find a single company by name, get its contacts,
@@ -316,6 +318,7 @@ async def find_companies(
     industries: list[str] = Query(...),
     regions: list[str] = Query(...),
     sizes: list[str] = Query(default=[]),
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Find companies by multiple industries and regions via Perplexity API."""
@@ -378,6 +381,7 @@ async def find_companies(
 @router.post("/find-contacts/{company_id}")
 async def find_contacts(
     company_id: UUID,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Find contacts at a company."""
@@ -415,7 +419,7 @@ async def find_contacts(
 
 
 @router.post("/find-contacts-all")
-async def find_contacts_all(db: Session = Depends(get_db)):
+async def find_contacts_all(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Find contacts for all companies in the DB."""
     api_key = db_svc.get_setting(db, "perplexity_api_key")
     if not api_key:
@@ -561,6 +565,7 @@ async def _verify_single_lead(lead, api_key: str, db: Session) -> dict:
 @router.post("/verify-email/{lead_id}")
 async def verify_email(
     lead_id: UUID,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Verify a lead's email address using:
@@ -600,7 +605,7 @@ async def verify_progress():
 
 
 @router.post("/verify-all")
-async def verify_all_emails(db: Session = Depends(get_db)):
+async def verify_all_emails(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Verify emails for all unverified leads — parallel with semaphore.
     Runs up to MAX_CONCURRENT_VERIFY Perplexity calls in parallel.
     Updates _verify_progress so frontend can poll."""
@@ -677,6 +682,7 @@ async def verify_all_emails(db: Session = Depends(get_db)):
 @router.post("/verify-email-technical/{lead_id}")
 async def verify_email_technical_only(
     lead_id: UUID,
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Run only the technical SMTP/MX verification (skip Perplexity)."""
@@ -719,7 +725,7 @@ async def verify_email_technical_only(
 # ─── Lead Scoring ─────────────────────────────────────────────────
 
 @router.post("/score-leads")
-async def score_leads(db: Session = Depends(get_db)):
+async def score_leads(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Compute outreach priority scores for all leads.
     Score 0.0-1.0 based on:
     - Title/seniority relevance (C-level compliance = high)
@@ -807,7 +813,7 @@ async def score_leads(db: Session = Depends(get_db)):
 
 
 @router.post("/compute-compliance-scores")
-async def compute_compliance_scores(db: Session = Depends(get_db)):
+async def compute_compliance_scores(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Compute compliance_score and key_regulations for all companies based on their industry/description.
     Uses industry keywords to determine applicable EU regulations."""
     from ..models.db import CompanyDB
