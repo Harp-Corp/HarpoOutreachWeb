@@ -2805,9 +2805,13 @@ function App() {
                           } catch (err) { setError(err.message) } finally { stopLoading() }
                         }} title="Passwort setzen">\ud83d\udd11</button>
                         <button className="btn btn-ghost btn-sm" onClick={async () => {
-                          if (!confirm('Benutzer wirklich deaktivieren?')) return
-                          try { await fetchJson(`${API}/auth/users/${u.id}`, { method: 'DELETE' }); loadTeamUsers() } catch {}
-                        }} title="Deaktivieren">\u2715</button>
+                          if (!confirm(`${u.name || u.email} wirklich l\u00f6schen? Diese Aktion kann nicht r\u00fcckg\u00e4ngig gemacht werden.`)) return
+                          try {
+                            await fetchJson(`${API}/auth/users/${u.id}`, { method: 'DELETE' })
+                            showSuccess(`${u.name || u.email} gel\u00f6scht`)
+                            loadTeamUsers()
+                          } catch (err) { setError(err.message) }
+                        }} title="L\u00f6schen">\ud83d\uddd1\ufe0f</button>
                       </>
                     )}
                   </div>

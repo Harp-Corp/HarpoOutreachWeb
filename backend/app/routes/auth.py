@@ -457,7 +457,7 @@ async def admin_set_password(user_id: str, body: AdminSetPasswordBody, admin: di
 
 @router.delete("/users/{user_id}")
 async def remove_user(user_id: str, admin: dict = Depends(require_admin), db: Session = Depends(get_db)):
-    """Deactivate a user (admin only)."""
+    """Delete a user permanently (admin only)."""
     from ..models.db_phase2 import UserDB
     from uuid import UUID as UUID_type
 
@@ -465,11 +465,12 @@ async def remove_user(user_id: str, admin: dict = Depends(require_admin), db: Se
     if not user:
         raise HTTPException(404, "Benutzer nicht gefunden.")
     if user.email == admin["email"]:
-        raise HTTPException(400, "Du kannst dich nicht selbst deaktivieren.")
-    user.is_active = False
+        raise HTTPException(400, "Du kannst dich nicht selbst l\u00f6schen.")
+    email = user.email
+    db.delete(user)
     db.commit()
-    logger.info(f"User deactivated: {user.email} by {admin['email']}")
-    return {"success": True, "message": f"Benutzer {user.email} deaktiviert."}
+    logger.info(f"User deleted: {email} by {admin['email']}")
+    return {"success": True, "message": f"Benutzer {email} gel\u00f6scht."}
 
 
 @router.patch("/users/{user_id}")
