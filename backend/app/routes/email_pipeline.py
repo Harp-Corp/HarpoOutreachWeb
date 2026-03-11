@@ -570,6 +570,10 @@ async def send_email(lead_id: UUID, user: dict = Depends(get_current_user), db: 
     if not draft.get("is_approved"):
         raise HTTPException(400, "E-Mail muss erst genehmigt werden.")
 
+    # Double-send protection
+    if lead.date_email_sent:
+        raise HTTPException(400, f"E-Mail an {lead.name} wurde bereits am {lead.date_email_sent.strftime('%d.%m.%Y %H:%M')} gesendet. Nutze 'Erneut senden' falls nötig.")
+
     # Blocklist check
     if db_svc.is_blocked(db, lead.email):
         lead.status = "Do Not Contact"
@@ -692,7 +696,7 @@ async def send_all_approved(user: dict = Depends(get_current_user), db: Session 
     failed = 0
     skipped_opt_out = 0
     skipped_scheduled = 0
-    sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
+    default_sender = db_svc.get_setting(db, "sender_email", "mf@harpocrates-corp.com")
 
     for i, lead in enumerate(batch):
         if db_svc.is_blocked(db, lead.email):
@@ -707,14 +711,35 @@ async def send_all_approved(user: dict = Depends(get_current_user), db: Session 
             continue
 
         draft = json.loads(lead.drafted_email_json)
-        reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
-        _logger.info(f"[send-all] Sending to {lead.email} ({lead.name})")
+
+        # Use Sender Pool rotation if available (same as single send)
+        pool_sender = rotation.get_next_sender(db)
+        if pool_sender:
+            sender = pool_sender.email
+            reply_to = pool_sender.reply_to or db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+        else:
+            sender = default_sender
+            reply_to = db_svc.get_setting(db, "reply_to_email") or settings.reply_to_email
+
+        _logger.info(f"[send-all] Sending to {lead.email} ({lead.name}), sender={sender}")
         try:
-            send_result = await _send_via_smtp(
-                to=lead.email, from_addr=sender,
-                subject=draft["subject"], body=draft["body"],
-                db=db, reply_to=reply_to,
-            )
+            if pool_sender:
+                backend_url = "https://harpo-backend-967761810588.europe-west1.run.app"
+                send_result = await asyncio.to_thread(
+                    smtp.send_email,
+                    to=lead.email, from_addr=sender,
+                    subject=draft["subject"], body=draft["body"],
+                    smtp_host=pool_sender.smtp_host, smtp_port=pool_sender.smtp_port,
+                    smtp_user=pool_sender.smtp_user, smtp_password=pool_sender.smtp_password_encrypted,
+                    reply_to=reply_to, backend_url=backend_url,
+                )
+                rotation.record_send(db, pool_sender)
+            else:
+                send_result = await _send_via_smtp(
+                    to=lead.email, from_addr=sender,
+                    subject=draft["subject"], body=draft["body"],
+                    db=db, reply_to=reply_to,
+                )
             lead.status = "Email Sent"
             lead.date_email_sent = datetime.utcnow()
             draft["sent_date"] = datetime.utcnow().isoformat()
@@ -724,6 +749,7 @@ async def send_all_approved(user: dict = Depends(get_current_user), db: Session 
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
+            _log_activity(db, "email_sent", "lead", str(lead.id), f"[Batch] Email an {lead.email}: {draft.get('subject', '')[:80]}", user=user)
             _logger.info(f"[send-all] Sent to {lead.email}")
 
             # Random delay 30-90s between sends
@@ -826,6 +852,7 @@ async def send_batch(data: BatchLeadIds, user: dict = Depends(get_current_user),
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
+            _log_activity(db, "email_sent", "lead", str(lead.id), f"[Kampagne] Email an {lead.email}: {draft.get('subject', '')[:80]}", user=user)
             _logger.info(f"Successfully sent to {lead.email}")
 
             # Rate limit: random 30-90s delay between sends
@@ -902,6 +929,7 @@ async def send_follow_up(lead_id: UUID, user: dict = Depends(get_current_user), 
     lead.updated_at = datetime.utcnow()
     db.commit()
 
+    _log_activity(db, "follow_up_sent", "lead", str(lead_id), f"Follow-Up an {lead.email}: {fu.get('subject', '')[:80]}", user=user)
     _logger.info(f"Follow-up sent to {lead.email}, msg_id={send_result.get('msg_id')}")
     return {"success": True, "message_id": send_result.get("msg_id")}
 

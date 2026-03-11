@@ -471,6 +471,7 @@ function App() {
     stopLoading()
   }
   const removeFromAddressBook = async (entryId) => {
+    if (!confirm('Kontakt aus dem Adressbuch entfernen?')) return
     try { await fetchJson(`${API}/data/address-book/${entryId}`, { method: 'DELETE' }); await loadAddressBook() }
     catch (e) { setError(e.message) }
   }
@@ -643,6 +644,7 @@ function App() {
     stopLoading()
   }
   const deletePost = async (postId) => {
+    if (!confirm('Post wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.')) return
     try { await fetchJson(`${API}/data/social-posts/${postId}`, { method: 'DELETE' }); await loadPosts() } catch (e) { setError(e.message) }
   }
   const copyPost = async (postId, content) => {

@@ -18,8 +18,26 @@ from ..services import perplexity_service as pplx
 from ..services import smtp_service as smtp
 from ..config import settings
 from ..services.auth_service import get_current_user
+from ..models.db_phase2 import ActivityLogDB
 
 logger = logging.getLogger("harpo.campaigns")
+
+
+def _log_activity(db: Session, action: str, entity_type: str, entity_id: str, details: str, user: dict = None):
+    """Log an activity entry with optional user attribution."""
+    try:
+        entry = ActivityLogDB(
+            user_id=user.get("id") if user and user.get("id") != "system" else None,
+            user_email=user.get("email", "system") if user else "system",
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details,
+        )
+        db.add(entry)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Activity log failed: {e}")
 
 router = APIRouter(prefix="/campaigns", tags=["Campaign Sequences"])
 
@@ -660,6 +678,7 @@ async def send_campaign_step(lead_id: UUID, step_num: int, user: dict = Depends(
     lead.updated_at = datetime.utcnow()
     db.commit()
 
+    _log_activity(db, "campaign_step_sent", "lead", str(lead_id), f"Kampagne Schritt {step_num} ({step_type}) an {lead.email}: {target_step.get('subject', '')[:80]}", user=user)
     logger.info(f"Campaign step {step_num} ({step_type}) sent to {lead.email}")
     return {"success": True, "step": step_num, "type": step_type, "message_id": send_result.get("msg_id")}
 
@@ -745,6 +764,7 @@ async def send_approved_steps(user: dict = Depends(get_current_user), db: Sessio
             lead.updated_at = datetime.utcnow()
             db.commit()
             sent += 1
+            _log_activity(db, "campaign_step_sent", "lead", str(lead.id), f"[Batch] Kampagne Schritt {approved_step['step']} ({step_type}) an {lead.email}", user=user)
             logger.info(f"Campaign step {approved_step['step']} sent to {lead.email}")
 
             # Rate limit: 30-90s between sends
