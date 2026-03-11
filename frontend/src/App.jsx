@@ -47,6 +47,16 @@ function App() {
   const [contentCalendar, setContentCalendar] = useState(null)
   const [socialView, setSocialView] = useState('posts') // 'posts' | 'calendar'
 
+  // ─── Network Status ──────────────────────────────────
+  const [isOffline, setIsOffline] = useState(!navigator.onLine)
+  useEffect(() => {
+    const goOffline = () => setIsOffline(true)
+    const goOnline = () => setIsOffline(false)
+    window.addEventListener('offline', goOffline)
+    window.addEventListener('online', goOnline)
+    return () => { window.removeEventListener('offline', goOffline); window.removeEventListener('online', goOnline) }
+  }, [])
+
   // ─── Team Management State ────────────────────────────
   const [teamUsers, setTeamUsers] = useState([])
   const [teamActivity, setTeamActivity] = useState([])
@@ -109,7 +119,11 @@ function App() {
           const detail = err.detail || ''
           if (resp.status === 400 && detail.includes('API Key')) throw new Error('Perplexity API-Key nicht konfiguriert. Bitte in den Einstellungen hinterlegen.')
           if (resp.status === 401 && detail.toLowerCase().includes('quota')) throw new Error('API-Quota erschöpft oder ungültiger Key. Bitte Guthaben prüfen.')
-          if (resp.status === 401) throw new Error(detail || 'Nicht angemeldet. Bitte einloggen.')
+          if (resp.status === 401) {
+            // Session expired or invalid — force re-auth
+            setAuthStatus(null)
+            throw new Error(detail || 'Sitzung abgelaufen. Bitte erneut einloggen.')
+          }
           if (resp.status === 403) throw new Error(detail || 'Keine Berechtigung.')
           if (resp.status === 404) throw new Error('Nicht gefunden. Eintrag wurde möglicherweise bereits gelöscht.')
           if (resp.status >= 500) throw new Error(`Server-Fehler (${resp.status}). Bitte in 30s erneut versuchen.`)
@@ -132,6 +146,14 @@ function App() {
     setSuccessMsg(msg)
     if (!sticky) setTimeout(() => setSuccessMsg(''), 5000)
   }
+
+  // Auto-dismiss errors after 15 seconds (unless sticky)
+  useEffect(() => {
+    if (error) {
+      const t = setTimeout(() => setError(''), 15000)
+      return () => clearTimeout(t)
+    }
+  }, [error])
 
   const startLoading = (msg) => { setLoading(true); setLoadingMsg(msg || 'Wird verarbeitet...'); setLoadingProgress(null) }
   const stopLoading = () => { setLoading(false); setLoadingMsg(''); setLoadingProgress(null) }
@@ -310,7 +332,7 @@ function App() {
   // ─── Actions ────────────────────────────────────────────
   const findCompanies = async () => {
     if (!selIndustries.length || !selRegions.length) { setError('Bitte mindestens eine Branche und eine Region auswählen.'); return }
-    startLoading('Unternehmen werden gesucht — kann bis zu 2 Minuten dauern...'); setError('')
+    if (loading) return; startLoading('Unternehmen werden gesucht — kann bis zu 2 Minuten dauern...'); setError('')
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000) // 5 min timeout
@@ -334,7 +356,7 @@ function App() {
     stopLoading()
   }
   const clearSearchResults = async () => {
-    if (!confirm('Alle Unternehmen und Kontakte aus der aktuellen Suche löschen?')) return
+    if (!confirm('Alle Suchergebnisse wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.')) return
     startLoading('Suchergebnisse werden gelöscht...'); setError('')
     try {
       await fetchJson(`${API}/data/companies`, { method: 'DELETE' })
@@ -1117,7 +1139,7 @@ function App() {
           <img src={harpoLogo} alt="Harpocrates" className="login-logo" />
           <h1 className="login-title">Harpocrates Outreach</h1>
           <p className="login-desc">Compliance-Outreach-Plattform für dein Team</p>
-          {error && <div className="msg msg-error" style={{marginBottom:'1rem',fontSize:'0.8125rem'}}>{error} <button onClick={() => setError('')}>×</button></div>}
+          {error && <div className="msg msg-error" style={{marginBottom:'1rem',fontSize:'0.8125rem'}}>{error.length > 200 ? error.slice(0,200) + '…' : error} <button onClick={() => setError('')}>×</button></div>}
           
           <div className="login-tabs">
             <button className={`login-tab ${loginTab === 'google' ? 'active' : ''}`} onClick={() => setLoginTab('google')}>Google</button>
@@ -1186,6 +1208,7 @@ function App() {
       </aside>
 
       <main className="main">
+        {isOffline && <div className="msg msg-error" style={{textAlign:'center'}}>⚡ Keine Internetverbindung — Änderungen können nicht gespeichert werden.</div>}
         {authStatus?.must_change_password && <div className="msg msg-error" style={{cursor:'pointer'}} onClick={() => setSection('team')}>⚠️ Bitte ändere dein Start-Passwort unter Team &rarr; Passwort ändern</div>}
         {error && <div className="msg msg-error">{error} <button onClick={() => setError('')}>×</button></div>}
         {successMsg && <div className="msg msg-success">{successMsg} <button onClick={() => setSuccessMsg('')} style={{background:'none',border:'none',color:'#166534',cursor:'pointer',fontSize:'1.1rem',marginLeft:'auto'}}>×</button></div>}
@@ -2011,7 +2034,7 @@ function App() {
                   </div>
                 </div>
                 <button className="btn btn-primary" disabled={loading || generatingWeekly} onClick={generateWeeklyPosts}>
-                  {generatingWeekly ? 'Wird generiert...' : 'Nächste Woche generieren'}
+                  {generatingWeekly ? 'Wird generiert...' : '📅 Nächste Woche generieren'}
                 </button>
               </div>
             )}

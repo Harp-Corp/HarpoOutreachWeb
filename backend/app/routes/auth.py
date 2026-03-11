@@ -178,9 +178,29 @@ class EmailLoginBody(BaseModel):
     password: str
 
 
+# Simple in-memory rate limiter for login attempts
+_login_attempts: dict[str, list] = {}
+
+def _check_login_rate(email: str) -> bool:
+    """Return True if login is allowed, False if rate-limited. Max 5 attempts per 5 minutes."""
+    from time import time
+    now = time()
+    key = email.lower().strip()
+    attempts = _login_attempts.get(key, [])
+    # Keep only last 5 minutes
+    attempts = [t for t in attempts if now - t < 300]
+    _login_attempts[key] = attempts
+    if len(attempts) >= 5:
+        return False
+    attempts.append(now)
+    _login_attempts[key] = attempts
+    return True
+
 @router.post("/login")
 async def email_login(body: EmailLoginBody, db: Session = Depends(get_db)):
     """Authenticate with email + password. Returns session cookie."""
+    if not _check_login_rate(body.email):
+        raise HTTPException(429, "Zu viele Anmeldeversuche. Bitte in 5 Minuten erneut versuchen.")
     from ..models.db_phase2 import UserDB
 
     email = body.email.lower().strip()
@@ -223,8 +243,10 @@ async def set_own_password(body: SetPasswordBody, user: dict = Depends(get_curre
     if not db_user:
         raise HTTPException(404, "Benutzer nicht gefunden.")
 
-    # If user already has a password, require old password
-    if db_user.password_hash and body.current_password:
+    # If user already has a password, ALWAYS require old password (security hardening)
+    if db_user.password_hash:
+        if not body.current_password:
+            raise HTTPException(400, "Aktuelles Passwort muss angegeben werden.")
         if not _verify_password(body.current_password, db_user.password_hash):
             raise HTTPException(400, "Aktuelles Passwort ist falsch.")
 
@@ -388,6 +410,11 @@ async def invite_user(body: InviteBody, request: Request, admin: dict = Depends(
     import asyncio
 
     email = body.email.lower().strip()
+    # Basic email format validation
+    if not email or '@' not in email or '.' not in email.split('@')[-1]:
+        raise HTTPException(400, "Ungültige E-Mail-Adresse.")
+    if len(email) > 254:
+        raise HTTPException(400, "E-Mail-Adresse zu lang.")
     count = db.query(UserDB).filter(UserDB.is_active == True).count()
     if count >= MAX_USERS:
         raise HTTPException(400, f"Maximale Anzahl von {MAX_USERS} Benutzern erreicht.")
@@ -461,16 +488,20 @@ async def remove_user(user_id: str, admin: dict = Depends(require_admin), db: Se
     from ..models.db_phase2 import UserDB
     from uuid import UUID as UUID_type
 
-    user = db.query(UserDB).filter(UserDB.id == UUID_type(user_id)).first()
+    try:
+        uid = UUID_type(user_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(400, "Ungültige Benutzer-ID.")
+    user = db.query(UserDB).filter(UserDB.id == uid).first()
     if not user:
         raise HTTPException(404, "Benutzer nicht gefunden.")
     if user.email == admin["email"]:
-        raise HTTPException(400, "Du kannst dich nicht selbst l\u00f6schen.")
+        raise HTTPException(400, "Du kannst dich nicht selbst löschen.")
     email = user.email
     db.delete(user)
     db.commit()
     logger.info(f"User deleted: {email} by {admin['email']}")
-    return {"success": True, "message": f"Benutzer {email} gel\u00f6scht."}
+    return {"success": True, "message": f"Benutzer {email} gelöscht."}
 
 
 @router.patch("/users/{user_id}")

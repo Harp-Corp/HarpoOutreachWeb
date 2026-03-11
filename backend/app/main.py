@@ -39,6 +39,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global exception handler — catch unhandled errors gracefully
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: _Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return _JSONResponse(
+        status_code=500,
+        content={"detail": "Ein unerwarteter Fehler ist aufgetreten. Bitte erneut versuchen."},
+    )
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: _Request, exc: ValueError):
+    logger.warning(f"ValueError on {request.method} {request.url.path}: {exc}")
+    return _JSONResponse(
+        status_code=400,
+        content={"detail": f"Ungültige Eingabe: {str(exc)[:200]}"},
+    )
+
 # Routes
 app.include_router(auth.router, prefix="/api")
 app.include_router(prospecting.router, prefix="/api")
@@ -113,6 +133,18 @@ def _migrate_users_table():
     finally:
         db.close()
 
+
+# Request logging middleware
+import time as _time
+
+@app.middleware("http")
+async def log_requests(request: _Request, call_next):
+    start = _time.time()
+    response = await call_next(request)
+    duration = _time.time() - start
+    if duration > 5.0:  # Log slow requests (>5s)
+        logger.warning(f"SLOW {request.method} {request.url.path} took {duration:.1f}s (status={response.status_code})")
+    return response
 
 @app.on_event("startup")
 async def startup():
