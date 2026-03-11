@@ -103,7 +103,9 @@ function App() {
           const err = await resp.json().catch(() => ({}))
           const detail = err.detail || ''
           if (resp.status === 400 && detail.includes('API Key')) throw new Error('Perplexity API-Key nicht konfiguriert. Bitte in den Einstellungen hinterlegen.')
-          if (resp.status === 401 || detail.toLowerCase().includes('quota')) throw new Error('API-Quota erschöpft oder ungültiger Key. Bitte Guthaben prüfen.')
+          if (resp.status === 401 && detail.toLowerCase().includes('quota')) throw new Error('API-Quota erschöpft oder ungültiger Key. Bitte Guthaben prüfen.')
+          if (resp.status === 401) throw new Error(detail || 'Nicht angemeldet. Bitte einloggen.')
+          if (resp.status === 403) throw new Error(detail || 'Keine Berechtigung.')
           if (resp.status === 404) throw new Error('Nicht gefunden. Eintrag wurde möglicherweise bereits gelöscht.')
           if (resp.status >= 500) throw new Error(`Server-Fehler (${resp.status}). Bitte in 30s erneut versuchen.`)
           throw new Error(detail || `Fehler ${resp.status}`)

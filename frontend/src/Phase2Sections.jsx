@@ -19,7 +19,7 @@ export function Phase2Panel({ fetchJson, showSuccess, setError, startLoading, st
   const loadWarmup = useCallback(async () => { try { const r = await fetchJson(`${API}/warmup/accounts`); setWarmupAccounts(r.data || []) } catch {} }, [fetchJson])
   const loadPool = useCallback(async () => { try { const r = await fetchJson(`${API}/sender-pool`); setSenderPool(r.data || { senders: [], capacity: {} }) } catch {} }, [fetchJson])
   const loadTracking = useCallback(async () => { try { const r = await fetchJson(`${API}/tracking/dashboard`); setTrackingDashboard(r.data || null) } catch {} }, [fetchJson])
-  const loadUsers = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/users`); setUsers(r.data || []) } catch {} }, [fetchJson])
+  const loadUsers = useCallback(async () => { try { const r = await fetchJson(`${API}/auth/users`); setUsers(r.data || []) } catch (e) { console.warn('loadUsers failed:', e.message); setError && setError('Team laden fehlgeschlagen: ' + e.message) } }, [fetchJson, setError])
   const loadActivity = useCallback(async () => { try { const r = await fetchJson(`${API}/activity-log?limit=20`); setActivityLog(r.data || []) } catch {} }, [fetchJson])
   const loadABTests = useCallback(async () => { try { const r = await fetchJson(`${API}/ab-tests`); setAbTests(r.data || []) } catch {} }, [fetchJson])
 
