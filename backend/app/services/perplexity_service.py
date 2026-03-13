@@ -2044,14 +2044,82 @@ Return JSON:
         logger.warning(f"[CrossCheck] Pass 1 failed: {e}")
 
     # ── Pass 2: URL reachability + relevance ──────────────────────
+    # Known institutional domains that block automated requests but are legitimate
+    _TRUSTED_DOMAINS = {
+        "esma.europa.eu", "ecb.europa.eu", "eba.europa.eu",
+        "eiopa.europa.eu", "ec.europa.eu", "europa.eu",
+        "eur-lex.europa.eu", "europarl.europa.eu",
+        "bafin.de", "bundesbank.de", "fca.org.uk",
+        "bis.org", "fsb.org", "imf.org",
+        "www.esma.europa.eu", "www.ecb.europa.eu", "www.eba.europa.eu",
+        "www.eiopa.europa.eu", "www.ec.europa.eu",
+        "www.bafin.de", "www.bundesbank.de", "www.fca.org.uk",
+    }
+
+    async def _real_url_check(url: str) -> dict:
+        """Directly check URL reachability via HTTP HEAD/GET with browser-like headers."""
+        from urllib.parse import urlparse as _urlparse
+        result = {"url": url, "reachable": False, "domain_exists": False, "relevant": True, "details": ""}
+        try:
+            parsed = _urlparse(url)
+            hostname = (parsed.hostname or "").lower()
+            # Trusted institutional domains — assume reachable
+            if hostname in _TRUSTED_DOMAINS or any(hostname.endswith(f".{d}") for d in _TRUSTED_DOMAINS):
+                result["reachable"] = True
+                result["domain_exists"] = True
+                result["details"] = f"Trusted institutional domain: {hostname}"
+                return result
+        except Exception:
+            pass
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=12, follow_redirects=True, verify=False) as cl:
+                # Try HEAD first (lighter)
+                try:
+                    r = await cl.head(url, headers=headers)
+                    result["domain_exists"] = True
+                    if r.status_code < 500:
+                        result["reachable"] = True
+                        result["details"] = f"HTTP {r.status_code}"
+                        return result
+                except Exception:
+                    pass
+                # Fall back to GET
+                r = await cl.get(url, headers=headers)
+                result["domain_exists"] = True
+                result["reachable"] = r.status_code < 500
+                result["details"] = f"HTTP {r.status_code}"
+        except httpx.ConnectError:
+            result["details"] = "Connection failed"
+        except httpx.TimeoutException:
+            # Timeout often means the server exists but is slow — not necessarily dead
+            result["domain_exists"] = True
+            result["details"] = "Timeout (server may still be valid)"
+        except Exception as ex:
+            result["details"] = str(ex)[:80]
+        return result
+
     urls_in_post = _re.findall(r'https?://[^\s)>"\]]+', post_content)
     urls_checked = []
     if urls_in_post:
+        # First: do REAL HTTP checks in parallel
+        real_checks = await asyncio.gather(
+            *[_real_url_check(u) for u in urls_in_post[:10]],
+            return_exceptions=True,
+        )
+        http_results = {}
+        for rc in real_checks:
+            if isinstance(rc, dict):
+                http_results[rc["url"]] = rc
+
+        # Second: use LLM for relevance check (but reachability comes from HTTP)
         system_urls = """You are a URL verification assistant.
 For each URL provided, determine:
-1. Is this a real, reachable URL? (Check if the domain exists and the path is plausible)
-2. Does the content at this URL support the context it's cited in?
-3. Is the URL still current (not outdated, moved, or broken)?
+1. Does the content at this URL support the context it's cited in?
+2. Is the URL still current (not outdated, moved, or broken)?
 
 Search for each URL or its content. If you can't access a URL directly, search for the page title or content.
 Return ONLY valid JSON."""
@@ -2093,10 +2161,25 @@ Return JSON:
             )
             raw2 = resp2 if isinstance(resp2, str) else resp2.get("content", "")
             parsed2 = json.loads(_clean_json(raw2))
-            urls_checked = parsed2.get("urls", [])
-            logger.info(f"[CrossCheck] Pass 2: {len(urls_checked)} URLs checked")
+            llm_urls = parsed2.get("urls", [])
+            # Merge: HTTP reachability overrides LLM, but keep LLM relevance
+            llm_by_url = {u.get("url", ""): u for u in llm_urls}
+            for url in urls_in_post[:10]:
+                http_r = http_results.get(url, {})
+                llm_r = llm_by_url.get(url, {})
+                merged = {
+                    "url": url,
+                    # Reachable if EITHER HTTP check or LLM says yes
+                    "reachable": http_r.get("reachable", False) or llm_r.get("reachable", False),
+                    "domain_exists": http_r.get("domain_exists", False) or llm_r.get("domain_exists", False),
+                    "relevant": llm_r.get("relevant", True),  # Default to relevant
+                    "details": http_r.get("details", "") or llm_r.get("details", ""),
+                }
+                urls_checked.append(merged)
+            logger.info(f"[CrossCheck] Pass 2: {len(urls_checked)} URLs checked (HTTP+LLM merged)")
         except Exception as e:
-            logger.warning(f"[CrossCheck] Pass 2 failed: {e}")
+            logger.warning(f"[CrossCheck] Pass 2 LLM failed, using HTTP-only results: {e}")
+            urls_checked = [http_results.get(u, {"url": u, "reachable": False, "domain_exists": False, "relevant": True, "details": "LLM check failed"}) for u in urls_in_post[:10]]
 
     # ── Pass 3: Entity verification ──────────────────────────────
     system_entities = """You are an entity verification specialist for regulatory and fintech content.
@@ -2150,31 +2233,52 @@ Return JSON:
     except Exception as e:
         logger.warning(f"[CrossCheck] Pass 3 failed: {e}")
 
-    # ── Scoring ──────────────────────────────────────────────────
-    total_checks = 0
-    passed_checks = 0
+    # ── Scoring (weighted by category) ─────────────────────────────
+    # Weights: facts matter most, entities second, URLs least.
+    # URLs are supplementary — institutional sites (ESMA, ECB) often block
+    # automated access, so URL reachability shouldn't dominate the score.
+    W_FACTS = 0.60
+    W_ENTITIES = 0.30
+    W_URLS = 0.10
 
+    # Category: facts/claims
+    fact_total = len(claims_result)
+    fact_passed = 0.0
     for c in claims_result:
-        total_checks += 1
         v = c.get("verdict", "unverifiable").lower()
         if v == "verified":
-            passed_checks += 1
+            fact_passed += 1
         elif v == "inaccurate":
-            passed_checks += 0.3  # partial credit
+            fact_passed += 0.3  # partial credit
+    fact_ratio = (fact_passed / fact_total) if fact_total > 0 else 1.0
 
+    # Category: URLs
+    url_total = len(urls_checked)
+    url_passed = 0.0
     for u in urls_checked:
-        total_checks += 1
         if u.get("reachable") and u.get("relevant"):
-            passed_checks += 1
+            url_passed += 1
         elif u.get("reachable") or u.get("domain_exists"):
-            passed_checks += 0.3
+            url_passed += 0.5  # domain exists = half credit
+    url_ratio = (url_passed / url_total) if url_total > 0 else 1.0
 
+    # Category: entities
+    ent_total = len(entities_result)
+    ent_passed = 0.0
     for e in entities_result:
-        total_checks += 1
         if e.get("exists"):
-            passed_checks += 1
+            ent_passed += 1
+    ent_ratio = (ent_passed / ent_total) if ent_total > 0 else 1.0
 
-    score = round(passed_checks / total_checks, 2) if total_checks > 0 else 0.0
+    # Weighted score
+    score = round(W_FACTS * fact_ratio + W_ENTITIES * ent_ratio + W_URLS * url_ratio, 2)
+    score = min(score, 1.0)
+
+    logger.info(
+        f"[CrossCheck] Score breakdown: facts={fact_passed}/{fact_total} ({fact_ratio:.0%}), "
+        f"urls={url_passed}/{url_total} ({url_ratio:.0%}), "
+        f"entities={ent_passed}/{ent_total} ({ent_ratio:.0%}) => weighted={score:.0%}"
+    )
 
     # Determine overall status
     has_false = any(c.get("verdict", "").lower() == "false" for c in claims_result)
