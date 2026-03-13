@@ -249,7 +249,7 @@ function App() {
     else if (section === 'social') { loadPosts(); loadContentCalendar() }
     else if (section === 'analytics') { loadSentEmails(); loadAnalyticsSummary(); loadAnalyticsFunnel(); loadLinkedinAnalytics(); loadPosts(); loadActivityLog() }
     else if (section === 'team') { loadTeamUsers(); loadTeamActivity() }
-    else if (section === 'settings') { loadDashboard(); loadAddressBook() }
+    else if (section === 'settings') { loadDashboard(); loadAddressBook(); loadAnalyticsSummary() }
   }, [section, loadCompanies, loadLeads, loadPosts, loadAddressBook, loadDashboard, loadTeamUsers, loadTeamActivity])
 
   // Auto-dismiss loadError after 15 seconds
@@ -2385,6 +2385,58 @@ function App() {
               )}
             </div>
 
+            {/* Performance KPIs + Sender Health */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1rem'}}>
+              {/* Contacts per Reply KPI */}
+              <div className="card" style={{border:'1px solid #d1fae5',background:'linear-gradient(135deg,#f0fdf4 0%,#fff 100%)'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <h2 style={{margin:0,fontSize:'0.9rem',color:'#065f46'}}>Effizienz-KPI</h2>
+                  <span style={{fontSize:'0.7rem',color:'#6b7280',background:'#f0fdf4',padding:'2px 8px',borderRadius:'1rem'}}>Kontakte pro Antwort</span>
+                </div>
+                <div style={{textAlign:'center',padding:'1rem 0'}}>
+                  <div style={{fontSize:'2.5rem',fontWeight:800,color:analyticsSummary?.contacts_per_reply ? (analyticsSummary.contacts_per_reply <= 50 ? '#22c55e' : analyticsSummary.contacts_per_reply <= 100 ? '#f59e0b' : '#ef4444') : '#d1d5db'}}>
+                    {analyticsSummary?.contacts_per_reply != null ? analyticsSummary.contacts_per_reply : '—'}
+                  </div>
+                  <div style={{fontSize:'0.75rem',color:'#6b7280',marginTop:'0.25rem'}}>
+                    {analyticsSummary?.contacts_per_reply != null
+                      ? `${analyticsSummary.total_sent} gesendet → ${analyticsSummary.total_replied} Antworten`
+                      : 'Noch keine Antworten'}
+                  </div>
+                </div>
+                {analyticsSummary?.contacts_per_reply != null && (
+                  <div style={{fontSize:'0.7rem',color:'#6b7280',textAlign:'center',borderTop:'1px solid #d1fae5',paddingTop:'0.5rem'}}>
+                    {analyticsSummary.contacts_per_reply <= 50 ? 'Exzellent — Top-Performance' : analyticsSummary.contacts_per_reply <= 100 ? 'Gut — Optimierungspotenzial' : 'Optimierung empfohlen'}
+                  </div>
+                )}
+              </div>
+
+              {/* Sender Health Ampel */}
+              <div className="card" style={{border:`1px solid ${analyticsSummary?.sender_health === 'red' ? '#fecaca' : analyticsSummary?.sender_health === 'yellow' ? '#fde68a' : analyticsSummary?.sender_health === 'green' ? '#bbf7d0' : '#e5e7eb'}`,background:analyticsSummary?.sender_health === 'red' ? 'linear-gradient(135deg,#fef2f2 0%,#fff 100%)' : analyticsSummary?.sender_health === 'yellow' ? 'linear-gradient(135deg,#fffbeb 0%,#fff 100%)' : 'linear-gradient(135deg,#f0fdf4 0%,#fff 100%)'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <h2 style={{margin:0,fontSize:'0.9rem',color:'#1e293b'}}>Sender-Reputation</h2>
+                  <span style={{width:12,height:12,borderRadius:'50%',display:'inline-block',background:analyticsSummary?.sender_health === 'red' ? '#ef4444' : analyticsSummary?.sender_health === 'yellow' ? '#f59e0b' : analyticsSummary?.sender_health === 'green' ? '#22c55e' : '#d1d5db'}} />
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0.5rem',margin:'0.75rem 0'}}>
+                  <div style={{textAlign:'center',padding:'0.5rem',background:'rgba(255,255,255,0.7)',borderRadius:'0.375rem'}}>
+                    <div style={{fontSize:'1.25rem',fontWeight:700,color:(analyticsSummary?.bounce_rate || 0) > 5 ? '#ef4444' : '#1e293b'}}>{analyticsSummary?.bounce_rate || 0}%</div>
+                    <div style={{fontSize:'0.7rem',color:'#6b7280'}}>Bounce-Rate</div>
+                  </div>
+                  <div style={{textAlign:'center',padding:'0.5rem',background:'rgba(255,255,255,0.7)',borderRadius:'0.375rem'}}>
+                    <div style={{fontSize:'1.25rem',fontWeight:700,color:(analyticsSummary?.unsub_rate || 0) > 2 ? '#f59e0b' : '#1e293b'}}>{analyticsSummary?.unsub_rate || 0}%</div>
+                    <div style={{fontSize:'0.7rem',color:'#6b7280'}}>Abmelde-Rate</div>
+                  </div>
+                </div>
+                <div style={{fontSize:'0.75rem',color:'#6b7280',borderTop:'1px solid #e5e7eb',paddingTop:'0.5rem'}}>
+                  {analyticsSummary?.sender_health_detail || 'Wird berechnet...'}
+                </div>
+                {analyticsSummary?.sender_is_primary_domain && analyticsSummary?.sender_domain && (
+                  <div style={{marginTop:'0.5rem',padding:'0.5rem 0.75rem',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:'0.375rem',fontSize:'0.7rem',color:'#92400e'}}>
+                    ⚠ Versand läuft über Hauptdomain ({analyticsSummary.sender_domain}). Für Cold Outreach eine Subdomain empfohlen (z.B. outreach.{analyticsSummary.sender_domain}).
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Enhanced Summary Stats */}
             <div className="card">
               <h2>Funnel-Übersicht</h2>
@@ -2418,6 +2470,39 @@ function App() {
                   <div style={{fontSize:'0.75rem',color:'#6b7280'}}>Abmelde-Rate</div>
                 </div>
               </div>
+
+              {/* Weekly Trend */}
+              {analyticsSummary?.weekly_trend && analyticsSummary.weekly_trend.some(w => w.sent > 0) && (
+                <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:'1px solid #e5e7eb'}}>
+                  <h3 style={{fontSize:'0.85rem',fontWeight:600,color:'#374151',margin:'0 0 0.75rem'}}>Wochen-Trend</h3>
+                  <div style={{display:'flex',gap:'0.5rem',alignItems:'flex-end',height:'80px'}}>
+                    {analyticsSummary.weekly_trend.map((w, i) => {
+                      const maxSent = Math.max(...analyticsSummary.weekly_trend.map(ww => ww.sent), 1)
+                      const barH = Math.max((w.sent / maxSent) * 60, w.sent > 0 ? 4 : 0)
+                      const replyH = w.sent > 0 ? Math.max((w.replied / maxSent) * 60, w.replied > 0 ? 4 : 0) : 0
+                      return (
+                        <div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'0.25rem'}}>
+                          <div style={{fontSize:'0.65rem',fontWeight:600,color:w.reply_rate > 0 ? '#22c55e' : '#d1d5db'}}>{w.reply_rate > 0 ? `${w.reply_rate}%` : ''}</div>
+                          <div style={{width:'100%',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'60px'}}>
+                            <div style={{width:'70%',position:'relative'}}>
+                              <div style={{height:`${barH}px`,background:'#e0e7ff',borderRadius:'3px 3px 0 0',width:'100%'}} title={`${w.sent} gesendet`} />
+                              {replyH > 0 && <div style={{height:`${replyH}px`,background:'#22c55e',borderRadius:'0 0 3px 3px',width:'100%',marginTop:'-1px'}} title={`${w.replied} Antworten`} />}
+                            </div>
+                          </div>
+                          <div style={{fontSize:'0.65rem',color:'#6b7280',textAlign:'center',lineHeight:1.2}}>
+                            <div style={{fontWeight:500}}>{w.week}</div>
+                            <div style={{color:'#9ca3af'}}>{w.week_start}</div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div style={{display:'flex',gap:'1rem',marginTop:'0.5rem',fontSize:'0.65rem',color:'#9ca3af'}}>
+                    <span><span style={{display:'inline-block',width:8,height:8,background:'#e0e7ff',borderRadius:2,marginRight:4}} />Gesendet</span>
+                    <span><span style={{display:'inline-block',width:8,height:8,background:'#22c55e',borderRadius:2,marginRight:4}} />Antworten</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Open/Click Tracking Dashboard */}
@@ -2606,6 +2691,14 @@ function App() {
                     <div className="stat-card" style={{borderColor:'#22c55e'}}><div className="stat-val">{linkedinAnalytics.summary.total_likes || 0}</div><div className="stat-lbl">Likes</div></div>
                     <div className="stat-card"><div className="stat-val">{linkedinAnalytics.summary.total_comments || 0}</div><div className="stat-lbl">Kommentare</div></div>
                     <div className="stat-card"><div className="stat-val">{linkedinAnalytics.summary.total_shares || 0}</div><div className="stat-lbl">Shares</div></div>
+                    {linkedinAnalytics.summary.total_impressions > 0 && (
+                      <div className="stat-card" style={{borderColor:'#8b5cf6'}}>
+                        <div className="stat-val" style={{color: ((linkedinAnalytics.summary.total_clicks + linkedinAnalytics.summary.total_likes + linkedinAnalytics.summary.total_comments + linkedinAnalytics.summary.total_shares) / linkedinAnalytics.summary.total_impressions * 100) > 3 ? '#22c55e' : '#6b7280'}}>
+                          {(((linkedinAnalytics.summary.total_clicks + linkedinAnalytics.summary.total_likes + linkedinAnalytics.summary.total_comments + linkedinAnalytics.summary.total_shares) / linkedinAnalytics.summary.total_impressions) * 100).toFixed(1)}%
+                        </div>
+                        <div className="stat-lbl">Engagement-Rate</div>
+                      </div>
+                    )}
                   </div>
                   {linkedinAnalytics.data?.length > 0 && (
                     <div style={{marginTop:'1rem'}}>
@@ -2619,10 +2712,15 @@ function App() {
                             <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Likes</th>
                             <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Kommentare</th>
                             <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Shares</th>
+                            <th style={{padding:'0.5rem',color:'#6b7280',fontWeight:600,textAlign:'center'}}>Engagement</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {linkedinAnalytics.data.map(p => (
+                          {linkedinAnalytics.data.map(p => {
+                            const engRate = p.stats && p.stats.impressionCount > 0
+                              ? (((p.stats.clickCount || 0) + (p.stats.likeCount || 0) + (p.stats.commentCount || 0) + (p.stats.shareCount || 0)) / p.stats.impressionCount * 100).toFixed(1)
+                              : null
+                            return (
                             <tr key={p.id} style={{borderBottom:'1px solid #f3f4f6'}}>
                               <td style={{padding:'0.5rem 0.5rem',maxWidth:'300px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.content}</td>
                               <td style={{padding:'0.5rem',textAlign:'center',whiteSpace:'nowrap',color:'#6b7280'}}>{formatDate(p.published_at)}</td>
@@ -2633,12 +2731,13 @@ function App() {
                                   <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.likeCount || 0}</td>
                                   <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.commentCount || 0}</td>
                                   <td style={{padding:'0.5rem',textAlign:'center',fontWeight:500}}>{p.stats.shareCount || 0}</td>
+                                  <td style={{padding:'0.5rem',textAlign:'center',fontWeight:600,color:engRate > 3 ? '#22c55e' : engRate > 1 ? '#f59e0b' : '#6b7280'}}>{engRate != null ? `${engRate}%` : '—'}</td>
                                 </>
                               ) : (
-                                <td colSpan={5} style={{padding:'0.5rem',textAlign:'center',color:'#9ca3af',fontSize:'0.8rem'}}>{p.linkedin_post_id ? 'Statistiken werden geladen...' : 'Keine Post-ID'}</td>
+                                <td colSpan={6} style={{padding:'0.5rem',textAlign:'center',color:'#9ca3af',fontSize:'0.8rem'}}>{p.linkedin_post_id ? 'Statistiken werden geladen...' : 'Keine Post-ID'}</td>
                               )}
                             </tr>
-                          ))}
+                          )})}  
                         </tbody>
                       </table>
                     </div>
@@ -3002,6 +3101,16 @@ function App() {
                 <span style={{color:'#22c55e',fontSize:'0.9rem'}}>●</span>
                 <span className="sub">Hostinger SMTP (smtp.hostinger.com:465/SSL) — Konfiguration serverseitig verwaltet</span>
               </div>
+              {analyticsSummary?.sender_is_primary_domain && analyticsSummary?.sender_domain && (
+                <div style={{marginTop:'0.75rem',padding:'0.75rem',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:'0.5rem',display:'flex',alignItems:'flex-start',gap:'0.5rem'}}>
+                  <span style={{fontSize:'1.1rem',lineHeight:1,flexShrink:0}}>⚠️</span>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:'0.85rem',color:'#92400e',marginBottom:'0.25rem'}}>Domain-Reputationsschutz</div>
+                    <div style={{fontSize:'0.8rem',color:'#92400e'}}>Du sendest Cold Outreach über deine Hauptdomain <strong>{analyticsSummary.sender_domain}</strong>. Wenn deine Bounce- oder Spam-Rate steigt, kann das auch die Zustellbarkeit regulärer Geschäfts-E-Mails beeinträchtigen.</div>
+                    <div style={{fontSize:'0.75rem',color:'#a16207',marginTop:'0.375rem'}}>Empfehlung: Richte eine Subdomain ein (z.B. <strong>outreach.{analyticsSummary.sender_domain}</strong>) und konfiguriere SPF/DKIM dafür. So bleibt die Reputation deiner Hauptdomain geschützt.</div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="card">

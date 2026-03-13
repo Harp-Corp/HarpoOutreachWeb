@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -304,6 +304,59 @@ async def analytics_summary(user: dict = Depends(get_current_user), db: Session 
     effective_base = total_sent - total_bounced
     effective_reply_rate = round((total_replied / effective_base * 100), 1) if effective_base > 0 else 0.0
 
+    # ── Contacts per Reply (ColdTorch-style KPI) ──
+    contacts_per_reply = round(total_sent / total_replied, 1) if total_replied > 0 else None
+
+    # ── Weekly Trend (last 4 weeks) ──
+    weekly_trend = []
+    now = datetime.utcnow()
+    for week_offset in range(3, -1, -1):
+        week_start = now - timedelta(days=now.weekday() + 7 * week_offset)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = week_start + timedelta(days=7)
+        w_sent = 0
+        w_replied = 0
+        w_opened = 0
+        for lead in leads:
+            if lead.date_email_sent and week_start <= lead.date_email_sent < week_end:
+                w_sent += 1
+                if lead.reply_received and not lead.reply_received.startswith("[UNSUBSCRIBE]"):
+                    w_replied += 1
+        week_label = week_start.strftime("KW%V")
+        weekly_trend.append({
+            "week": week_label,
+            "week_start": week_start.strftime("%d.%m."),
+            "sent": w_sent,
+            "replied": w_replied,
+            "reply_rate": round(w_replied / w_sent * 100, 1) if w_sent > 0 else 0.0,
+        })
+
+    # ── Sender Health (traffic light) ──
+    # Green: bounce < 3% AND unsub < 1%
+    # Yellow: bounce 3-8% OR unsub 1-3%
+    # Red: bounce > 8% OR unsub > 3%
+    if total_sent == 0:
+        sender_health = "neutral"
+        sender_health_detail = "Noch keine E-Mails versendet"
+    elif bounce_rate > 8 or unsub_rate > 3:
+        sender_health = "red"
+        sender_health_detail = "Sendevolumen reduzieren, Kontaktliste bereinigen"
+    elif bounce_rate > 3 or unsub_rate > 1:
+        sender_health = "yellow"
+        sender_health_detail = "Bounce- oder Abmelde-Rate leicht erhöht"
+    else:
+        sender_health = "green"
+        sender_health_detail = "Alle Werte im grünen Bereich"
+
+    # ── Sender domain info ──
+    sender_email = db_svc.get_setting(db, "sender_email", "")
+    sender_domain = sender_email.split("@")[1] if "@" in sender_email else ""
+    website_domain = ""
+    # Check if sender uses what appears to be the company primary domain
+    is_primary_domain = bool(sender_domain and not any(
+        prefix in sender_domain for prefix in ["outreach.", "mail.", "send.", "campaign.", "cold."]
+    ))
+
     # ── Email Tracking (Open/Click) from email_tracking table ──
     tracking_stats = tracking_svc.get_tracking_stats(db)
     tracking_daily = defaultdict(lambda: {"sent": 0, "opened": 0, "clicked": 0})
@@ -337,6 +390,14 @@ async def analytics_summary(user: dict = Depends(get_current_user), db: Session 
             "unsub_rate": unsub_rate,
             "delivery_rate": delivery_rate,
             "effective_reply_rate": effective_reply_rate,
+            # Performance KPIs
+            "contacts_per_reply": contacts_per_reply,
+            "weekly_trend": weekly_trend,
+            # Sender Health
+            "sender_health": sender_health,
+            "sender_health_detail": sender_health_detail,
+            "sender_domain": sender_domain,
+            "sender_is_primary_domain": is_primary_domain,
             # Verification
             "total_verified": total_verified,
             "total_smtp_verified": total_smtp_verified,
