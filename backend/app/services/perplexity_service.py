@@ -1700,6 +1700,7 @@ CONTENT RULES:
 8. NO DUPLICATE topics — check the ALREADY POSTED list.
 9. FOOTER: Do NOT include any footer, website, email, or timestamp. These are added automatically.
 10. NO HASHTAGS in the content body. Return them separately in the JSON.
+11. NO JARGON OR UNEXPLAINED ABBREVIATIONS: Write so that any business professional can understand the post, not just compliance specialists. ALWAYS spell out abbreviations on first use, e.g. "Anti-Money Laundering (AML)" not just "AML". Avoid insider terms like "CFT", "KYC", "MiCA", "AMLD" without explaining what they mean in plain language. The tone should be clear, accessible, and engaging — not a regulatory memo.
 
 Return JSON: {{"content": "...", "hashtags": [...]}}"""
 
@@ -1714,11 +1715,12 @@ REQUIREMENTS:
 - All amounts in EUR (€)
 - Strong hook in line 1
 - 1-2 verified statistics with source attribution in the text
-- Reference relevant EU regulation (DORA, NIS2, GDPR, MiCA, EU AI Act, CSRD, PSD3, AMLD, EMIR, EBA Guidelines)
+- Reference relevant EU regulation — but ALWAYS explain what it is in plain language (e.g. "the Digital Operational Resilience Act (DORA), which requires financial firms to..." not just "DORA")
 - Mention COMPLY or COMPLY.Reg as Harpocrates' own solution (not a third-party recommendation)
 - Closing question or CTA
 - 150-250 words
-- Leave [1], [2] citation markers — do NOT write URLs yourself{dupe_context}
+- Leave [1], [2] citation markers — do NOT write URLs yourself
+- NO UNEXPLAINED ABBREVIATIONS: Spell out every acronym on first use. Write for a general business audience, not compliance insiders.{dupe_context}
 HASHTAG STRATEGY (pick 5-7, mix from tiers):
 Tier 1 — ALWAYS include 1-2: #RegTech #Compliance #RegulatoryCompliance
 Tier 2 — Topic-specific, pick 2-3: #DORA #NIS2 #GDPR #EUAIAct #CSRD #MiCA #PSD3 #AMLD6 #DataAct #CyberResilience #ESG #AML #DigitalEuro
@@ -1857,6 +1859,7 @@ CONTENT RULES:
 7. COMPLY MENTION: Reference COMPLY naturally as "our platform" or "At Harpocrates, our COMPLY.Reg module..."
 8. FOOTER: Do NOT include any footer, website, email, or timestamp. These are added automatically.
 9. NO HASHTAGS in the content body. Return them separately in the JSON.
+10. NO JARGON OR UNEXPLAINED ABBREVIATIONS: Write so that any business professional can understand the post, not just compliance specialists. ALWAYS spell out abbreviations on first use, e.g. "Anti-Money Laundering (AML)" not just "AML". Avoid insider terms without explaining what they mean in plain language. The tone should be clear, accessible, and engaging — not a regulatory memo.
 
 Return JSON: {"content": "...", "hashtags": [...]}"""
 
@@ -1879,6 +1882,7 @@ REQUIREMENTS:
 - Reference COMPLY/COMPLY.Reg as Harpocrates' own product
 - 150-250 words
 - Closing question or CTA
+- NO UNEXPLAINED ABBREVIATIONS: Spell out every acronym on first use (e.g. "Anti-Money Laundering (AML)"). Explain regulations in plain language. Write for a general business audience, not compliance insiders.
 HASHTAG STRATEGY (pick 5-7, mix from tiers):
 Tier 1 — ALWAYS include 1-2: #RegTech #Compliance #RegulatoryCompliance
 Tier 2 — Topic-specific, pick 2-3: #DORA #NIS2 #GDPR #EUAIAct #CSRD #MiCA #PSD3 #AMLD6 #DataAct #CyberResilience #ESG #AML #DigitalEuro
